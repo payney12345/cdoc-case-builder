@@ -833,6 +833,11 @@ No prior alerts on this host in the last 30 days. The destination port 4444 is c
           </div>
           <label class="field-label">Analyst Rationale</label>
           <textarea id="triage_analystRationale" rows="3" placeholder="Analyst rationale and decision notes..." oninput="onTriageFieldChange('analystRationale', this.value)"></textarea>
+          <label class="check-item" style="margin-top:8px;">
+            <input type="checkbox" id="triage_includeAnalystAid" onchange="onTriageBooleanFieldChange('includeAnalystAidSections', this.checked)">
+            <span class="check-box"></span>
+            <span class="check-label">Include analyst aid sections in report output</span>
+          </label>
         </div>
 
         <div class="triage-panel" id="playbook-guidance-panel">
@@ -851,7 +856,22 @@ No prior alerts on this host in the last 30 days. The destination port 4444 is c
         </div>
 
         <div class="triage-panel" id="observables-panel">
-          <div class="triage-panel-title">Observables</div>
+          <div class="triage-panel-title">Case Entities &amp; Observables</div>
+          <label class="field-label" style="margin-top:0;">Case Entities / Facts</label>
+          <div style="overflow:auto;max-height:220px;margin-bottom:10px;">
+            <table class="triage-table">
+              <thead>
+                <tr>
+                  <th style="width:120px;">Type</th>
+                  <th style="width:210px;">Value</th>
+                  <th style="width:110px;">Source</th>
+                  <th>Context</th>
+                </tr>
+              </thead>
+              <tbody id="case-entities-body"></tbody>
+            </table>
+          </div>
+          <label class="field-label" style="margin-top:0;">Observables of Interest</label>
           <div style="overflow:auto;max-height:260px;">
             <table class="triage-table">
               <thead>
@@ -863,7 +883,7 @@ No prior alerts on this host in the last 30 days. The destination port 4444 is c
                   <th style="width:130px;">Disposition</th>
                 </tr>
               </thead>
-              <tbody id="observables-body"></tbody>
+              <tbody id="interest-observables-body"></tbody>
             </table>
           </div>
         </div>
@@ -1026,6 +1046,7 @@ var caseState = {
     escalationRequired: 'Pending',
     businessImpact: 'Unknown',
     analystRationale: '',
+    includeAnalystAidSections: false,
     checklist: {},
     knownGoodChecks: {},
     observableDispositions: {}
@@ -1534,6 +1555,8 @@ function mergeRuleContext(nextCtx) {
 
 // ── TRIAGE SUPPORT PACK V1 ─────────────────────────────────────────────────
 var triageObservables = [];
+var triageCaseEntities = [];
+var triageInterestObservables = [];
 var triagePivots = [];
 
 function getDefaultTriageState() {
@@ -1544,6 +1567,7 @@ function getDefaultTriageState() {
     escalationRequired: 'Pending',
     businessImpact: 'Unknown',
     analystRationale: '',
+    includeAnalystAidSections: false,
     checklist: {},
     knownGoodChecks: {},
     observableDispositions: {}
@@ -1707,6 +1731,12 @@ function onTriageFieldChange(field, value) {
   updatePreview();
 }
 
+function onTriageBooleanFieldChange(field, checked) {
+  ensureTriageState();
+  caseState.triage[field] = !!checked;
+  updatePreview();
+}
+
 function onObservableDispositionChange(key, value) {
   ensureTriageState();
   caseState.triage.observableDispositions[key] = value;
@@ -1714,12 +1744,12 @@ function onObservableDispositionChange(key, value) {
 }
 
 function onObservableDispositionChangeByIndex(index, value) {
-  var obs = triageObservables[index];
+  var obs = triageInterestObservables[index];
   if (!obs) return;
   onObservableDispositionChange(obs.id, value);
 }
 
-function addObservable(list, map, type, value, source, context) {
+function addObservableEntry(list, map, type, value, source, context, withDisposition) {
   if (!value) return;
   var clean = String(value).trim();
   if (!clean) return;
@@ -1730,39 +1760,60 @@ function addObservable(list, map, type, value, source, context) {
   if (type === 'Source IP' || type === 'Destination IP') display = defangIp(clean);
   if (type === 'Domain') display = defangIfNeeded(clean, 'url.domain');
   if (type === 'URL') display = defangUrl(clean);
-  var disp = caseState.triage.observableDispositions[key] || 'Unknown';
-  list.push({ id: key, type: type, value: display, source: source, context: context || '', disposition: disp });
+  var entry = { id: key, type: type, value: display, source: source, context: context || '' };
+  if (withDisposition) entry.disposition = caseState.triage.observableDispositions[key] || 'Unknown';
+  list.push(entry);
 }
 
-function buildObservables() {
+function buildCaseEntitiesAndObservables() {
   ensureTriageState();
-  var list = [];
-  var seen = {};
+  var entities = [];
+  var entitySeen = {};
+  var observables = [];
+  var observableSeen = {};
   var rawEv = getRawAlertEvent();
   var all = caseState.events.slice();
   if (rawEv) all.push(normalizeJsonEvent(rawEv));
 
   all.forEach(function(e) {
-    addObservable(list, seen, 'Host', e.host, 'Timeline', 'Host context');
-    addObservable(list, seen, 'User', e.user, 'Timeline', 'User context');
-    addObservable(list, seen, 'Source IP', e.sourceIp, 'Timeline', 'Source address');
-    addObservable(list, seen, 'Destination IP', e.destinationIp, 'Timeline', 'Destination address');
-    addObservable(list, seen, 'Domain', e.domain, 'Timeline', 'Domain indicator');
-    addObservable(list, seen, 'URL', e.url, 'Timeline', 'Web indicator');
-    addObservable(list, seen, 'Process', e.processName, 'Timeline', 'Process activity');
-    addObservable(list, seen, 'Vault Operation', e.vaultOperation, 'Timeline', 'Vault activity');
-    addObservable(list, seen, 'Vault Mount', e.vaultMountType || e.vaultMountPoint, 'Timeline', 'Vault mount context');
-    addObservable(list, seen, 'Token Type', e.vaultTokenType, 'Timeline', 'Vault token context');
-    addObservable(list, seen, 'Rule', e.ruleName, 'Alert', 'Detection rule');
-    (e.mitreTechniques || []).forEach(function(t){ addObservable(list, seen, 'MITRE Technique', t, 'Alert', 'MITRE mapping'); });
-    (e.relatedHosts || []).forEach(function(h){ addObservable(list, seen, 'Host', h, 'Timeline', 'Related host'); });
+    addObservableEntry(entities, entitySeen, 'User', e.user, 'Timeline', 'User context', false);
+    addObservableEntry(entities, entitySeen, 'Host / UAD', e.host || e.machineName, 'Timeline', 'Host context', false);
+    addObservableEntry(entities, entitySeen, 'Site / Unit', e.siteName, 'Timeline', 'Site context', false);
+    addObservableEntry(entities, entitySeen, 'Rule', e.ruleName, 'Alert', 'Detection rule', false);
+    addObservableEntry(entities, entitySeen, 'Severity', e.severity, 'Alert', 'Rule severity', false);
+    addObservableEntry(entities, entitySeen, 'Risk Score', e.riskScore, 'Alert', 'Rule risk score', false);
+    addObservableEntry(entities, entitySeen, 'HTTP Method', e.httpMethod, 'Timeline', 'Web request context', false);
+    addObservableEntry(entities, entitySeen, 'HTTP Status', e.httpStatus, 'Timeline', 'Web response context', false);
+    addObservableEntry(entities, entitySeen, 'MIME Type', e.mimeType, 'Timeline', 'Content type context', false);
+    addObservableEntry(entities, entitySeen, 'User Agent', e.userAgent, 'Timeline', 'Client context', false);
+    addObservableEntry(entities, entitySeen, 'Vault Token Type', e.vaultTokenType, 'Timeline', 'Vault auth context', false);
+    addObservableEntry(entities, entitySeen, 'Vault Operation', e.vaultOperation, 'Timeline', 'Vault activity context', false);
+    (e.relatedHosts || []).forEach(function(h){ addObservableEntry(entities, entitySeen, 'Host / UAD', h, 'Timeline', 'Related host context', false); });
+
+    addObservableEntry(observables, observableSeen, 'Source IP', e.sourceIp, 'Timeline', 'Source address', true);
+    addObservableEntry(observables, observableSeen, 'Destination IP', e.destinationIp, 'Timeline', 'Destination address', true);
+    addObservableEntry(observables, observableSeen, 'Domain', e.domain, 'Timeline', 'Domain indicator', true);
+    addObservableEntry(observables, observableSeen, 'URL', e.url, 'Timeline', 'Web indicator', true);
+    addObservableEntry(observables, observableSeen, 'Process Name', e.processName, 'Timeline', 'Process activity', true);
+    addObservableEntry(observables, observableSeen, 'Process Command Line', e.processName, 'Timeline', 'Process command context', true);
+    addObservableEntry(observables, observableSeen, 'Vault Mount Point', e.vaultMountPoint || e.vaultMountType, 'Timeline', 'Vault mount target', true);
+    addObservableEntry(observables, observableSeen, 'Vault Request URI', e.vaultRequestUri, 'Timeline', 'Vault request target', true);
+    (e.mitreTechniques || []).forEach(function(t){ addObservableEntry(observables, observableSeen, 'MITRE Technique', t, 'Alert', 'MITRE mapping', true); });
+
+    if (e.url) {
+      var fileName = e.url.split('/').pop();
+      if (fileName && fileName.indexOf('.') !== -1) addObservableEntry(observables, observableSeen, 'File Name / Path', fileName, 'Timeline', 'Web file artifact', true);
+    }
+    var hashFromReason = /\b[a-f0-9]{32,64}\b/i.exec(e.alertReason || '');
+    if (hashFromReason) addObservableEntry(observables, observableSeen, 'Hash', hashFromReason[0], 'Alert', 'Hash indicator', true);
   });
 
   var rc = caseState.ruleContext || {};
-  addObservable(list, seen, 'Rule', rc.name, 'Rule Context', 'Rule metadata');
-  (rc.mitreTechniques || []).forEach(function(t){ addObservable(list, seen, 'MITRE Technique', t, 'Rule Context', 'MITRE mapping'); });
-  (rc.mitreTactics || []).forEach(function(t){ addObservable(list, seen, 'Other', t, 'Rule Context', 'MITRE tactic'); });
-  return list;
+  addObservableEntry(entities, entitySeen, 'Rule', rc.name, 'Rule Context', 'Rule metadata', false);
+  addObservableEntry(entities, entitySeen, 'Severity', rc.severity, 'Rule Context', 'Rule severity', false);
+  addObservableEntry(entities, entitySeen, 'Risk Score', rc.riskScore, 'Rule Context', 'Rule risk score', false);
+  (rc.mitreTechniques || []).forEach(function(t){ addObservableEntry(observables, observableSeen, 'MITRE Technique', t, 'Rule Context', 'MITRE mapping', true); });
+  return { entities: entities, observables: observables };
 }
 
 function buildSuggestedPivotsFromObservables(observables) {
@@ -1838,14 +1889,29 @@ function renderTriageSupportPanels() {
   populateSelect('triage_businessImpact', TRIAGE_BUSINESS_IMPACT, caseState.triage.businessImpact);
   var rationaleEl = document.getElementById('triage_analystRationale');
   if (rationaleEl && rationaleEl.value !== caseState.triage.analystRationale) rationaleEl.value = caseState.triage.analystRationale || '';
+  var includeAidEl = document.getElementById('triage_includeAnalystAid');
+  if (includeAidEl) includeAidEl.checked = !!caseState.triage.includeAnalystAidSections;
   syncVerdictRadioFromTriage();
 
   renderChecklistPanel('evidence-checklist-list', getEvidenceChecklistItems(), 'evidence');
   renderChecklistPanel('known-good-checks-list', getKnownGoodCheckItems(), 'known');
   renderPlaybookGuidancePanel();
 
-  triageObservables = buildObservables();
-  document.getElementById('observables-body').innerHTML = triageObservables.map(function(o, i) {
+  var triageData = buildCaseEntitiesAndObservables();
+  triageCaseEntities = triageData.entities;
+  triageInterestObservables = triageData.observables;
+  triageObservables = triageInterestObservables.slice();
+
+  document.getElementById('case-entities-body').innerHTML = triageCaseEntities.map(function(e) {
+    return '<tr>'
+      + '<td>' + escHtml(e.type) + '</td>'
+      + '<td>' + escHtml(e.value) + '</td>'
+      + '<td>' + escHtml(e.source) + '</td>'
+      + '<td>' + escHtml(e.context) + '</td>'
+      + '</tr>';
+  }).join('') || '<tr><td colspan="4" class="triage-note">No case entities extracted yet.</td></tr>';
+
+  document.getElementById('interest-observables-body').innerHTML = triageInterestObservables.map(function(o, i) {
     return '<tr>'
       + '<td>' + escHtml(o.type) + '</td>'
       + '<td>' + escHtml(o.value) + '</td>'
@@ -1857,9 +1923,9 @@ function renderTriageSupportPanels() {
         }).join('')
       + '</select></td>'
       + '</tr>';
-  }).join('') || '<tr><td colspan="5" class="triage-note">No observables extracted yet.</td></tr>';
+  }).join('') || '<tr><td colspan="5" class="triage-note">No observables of interest extracted yet.</td></tr>';
 
-  triagePivots = buildSuggestedPivotsFromObservables(triageObservables);
+  triagePivots = buildSuggestedPivotsFromObservables(triageInterestObservables);
   document.getElementById('pivot-list').innerHTML = triagePivots.map(function(p, i) {
     return '<div class="pivot-row">'
       + '<div class="triage-note" style="margin:0;">' + escHtml(p.name) + '</div>'
@@ -2711,20 +2777,76 @@ function buildTimelineRowsForReport() {
 }
 
 function getReportObservables() {
-  return triageObservables && triageObservables.length ? triageObservables : buildObservables();
+  if (triageInterestObservables && triageInterestObservables.length) return triageInterestObservables;
+  return buildCaseEntitiesAndObservables().observables;
+}
+
+function getReportCaseEntities() {
+  if (triageCaseEntities && triageCaseEntities.length) return triageCaseEntities;
+  return buildCaseEntitiesAndObservables().entities;
 }
 
 function getReportPivots() {
   return triagePivots && triagePivots.length ? triagePivots : buildSuggestedPivotsFromObservables(getReportObservables());
 }
 
+function shouldIncludeAnalystAidInReport() {
+  ensureTriageState();
+  return !!caseState.triage.includeAnalystAidSections;
+}
+
+function buildMarkdownCaseEntitiesSection() {
+  var lines = [];
+  var entities = getReportCaseEntities();
+  var observables = getReportObservables();
+  lines.push('', '### 🧩 Case Entities / Observables');
+  lines.push('', '| Type | Value | Source | Notes |', '| :--- | :--- | :--- | :--- |');
+  if (entities.length) {
+    entities.forEach(function(e) {
+      lines.push('| ' + e.type + ' | ' + e.value + ' | ' + e.source + ' | Context: ' + (e.context || '—') + ' |');
+    });
+  }
+  if (observables.length) {
+    observables.forEach(function(o) {
+      var note = 'Context: ' + (o.context || '—');
+      if (o.disposition && o.disposition !== 'Unknown') note += '; Disposition: ' + o.disposition;
+      lines.push('| ' + o.type + ' | ' + o.value + ' | ' + o.source + ' | ' + note + ' |');
+    });
+  }
+  if (!entities.length && !observables.length) lines.push('| — | _No case entities or observables extracted._ | — | — |');
+  return lines;
+}
+
+function buildJiraCaseEntitiesSection() {
+  var lines = [];
+  var entities = getReportCaseEntities();
+  var observables = getReportObservables();
+  lines.push('');
+  lines.push('h3. 🧩 Case Entities / Observables');
+  lines.push('|| Type || Value || Source || Notes ||');
+  if (entities.length) {
+    entities.forEach(function(e) {
+      lines.push('| ' + e.type + ' | ' + e.value + ' | ' + e.source + ' | Context: ' + (e.context || '—') + ' |');
+    });
+  }
+  if (observables.length) {
+    observables.forEach(function(o) {
+      var note = 'Context: ' + (o.context || '—');
+      if (o.disposition && o.disposition !== 'Unknown') note += '; Disposition: ' + o.disposition;
+      lines.push('| ' + o.type + ' | ' + o.value + ' | ' + o.source + ' | ' + note + ' |');
+    });
+  }
+  if (!entities.length && !observables.length) lines.push('| — | _No case entities or observables extracted._ | — | — |');
+  return lines;
+}
+
 function buildMarkdownTriageSections() {
   ensureTriageState();
   var md = [];
-  var checkedEvidence = getCheckedTriageItems('evidence');
-  var checkedKnownGood = getCheckedTriageItems('known');
-  var observables = getReportObservables();
-  var pivots = getReportPivots();
+  var includeAid = shouldIncludeAnalystAidInReport();
+  var checkedEvidence = includeAid ? getCheckedTriageItems('evidence') : [];
+  var checkedKnownGood = includeAid ? getCheckedTriageItems('known') : [];
+  var pivots = includeAid ? getReportPivots() : [];
   var rc = caseState.ruleContext || {};
 
   md.push('', '### 🧭 Triage Decision');
@@ -2735,43 +2857,33 @@ function buildMarkdownTriageSections() {
   md.push('- **Business Impact:** ' + (caseState.triage.businessImpact || 'Unknown'));
   if (caseState.triage.analystRationale && caseState.triage.analystRationale.trim()) md.push('- **Analyst Rationale:** ' + caseState.triage.analystRationale.trim());
 
-  md.push('', '### 🔎 Observables', '', '| Type | Value | Source | Disposition |', '| :--- | :--- | :--- | :--- |');
-  if (observables.length) observables.forEach(function(o){ md.push('| ' + o.type + ' | ' + o.value + ' | ' + o.source + ' | ' + (o.disposition || 'Unknown') + ' |'); });
-  else md.push('| — | _No observables extracted._ | — | Unknown |');
+  if (includeAid) {
+    md.push('', '### ✅ Evidence Reviewed');
+    if (checkedEvidence.length) checkedEvidence.forEach(function(i){ md.push('- ' + i); });
+    else md.push('No evidence checklist items marked complete.');
 
-  md.push('', '### ✅ Evidence Reviewed');
-  if (checkedEvidence.length) checkedEvidence.forEach(function(i){ md.push('- ' + i); });
-  else md.push('No evidence checklist items marked complete.');
+    md.push('', '### 🟢 Known-Good / False Positive Checks');
+    if (checkedKnownGood.length) checkedKnownGood.forEach(function(i){ md.push('- ' + i); });
+    else md.push('No known-good checks marked complete.');
 
-  md.push('', '### 🟢 Known-Good / False Positive Checks');
-  if (checkedKnownGood.length) checkedKnownGood.forEach(function(i){ md.push('- ' + i); });
-  else md.push('No known-good checks marked complete.');
+    md.push('', '### 🧪 Suggested Pivots');
+    if (pivots.length) pivots.slice(0, 12).forEach(function(p){ md.push('- **' + p.name + ':** `' + p.query + '`'); });
+    else md.push('No pivots available.');
 
-  md.push('', '### 🧪 Suggested Pivots');
-  if (pivots.length) pivots.slice(0, 12).forEach(function(p){ md.push('- **' + p.name + ':** `' + p.query + '`'); });
-  else md.push('No pivots available.');
-
-  md.push('', '### 🧬 MITRE ATT&CK');
-  var mitreList = uniqValues((rc.mitreTechniques || []).concat(rc.mitreTactics || []));
-  if (mitreList.length) md.push(mitreList.map(function(m){ return '`' + m + '`'; }).join(' '));
-  else md.push('_No MITRE mappings extracted._');
-
-  md.push('', '### 📖 Rule Description / Investigation Notes');
-  if (rc.description) md.push('**Rule Description:** ' + rc.description);
-  else md.push('**Rule Description:** Not available.');
-  md.push('**Embedded Playbook Available:** ' + (rc.note && rc.note.trim() ? 'Yes' : 'No'));
-  if (rc.query) md.push('**Rule Query Available:** Yes');
-  else md.push('**Rule Query Available:** No');
+    md.push('', '### 📖 Analyst Aid Summary');
+    md.push('- **Embedded Playbook Available:** ' + (rc.note && rc.note.trim() ? 'Yes' : 'No'));
+    md.push('- **Rule Query Available:** ' + (rc.query ? 'Yes' : 'No'));
+  }
   return md;
 }
 
 function buildJiraTriageSections() {
   ensureTriageState();
   var j = [];
-  var checkedEvidence = getCheckedTriageItems('evidence');
-  var checkedKnownGood = getCheckedTriageItems('known');
-  var observables = getReportObservables();
-  var pivots = getReportPivots();
+  var includeAid = shouldIncludeAnalystAidInReport();
+  var checkedEvidence = includeAid ? getCheckedTriageItems('evidence') : [];
+  var checkedKnownGood = includeAid ? getCheckedTriageItems('known') : [];
+  var pivots = includeAid ? getReportPivots() : [];
   var rc = caseState.ruleContext || {};
 
   j.push('');
@@ -2783,38 +2895,27 @@ function buildJiraTriageSections() {
   j.push('*Business Impact:* ' + (caseState.triage.businessImpact || 'Unknown'));
   if (caseState.triage.analystRationale && caseState.triage.analystRationale.trim()) j.push('*Analyst Rationale:* ' + caseState.triage.analystRationale.trim());
 
-  j.push('');
-  j.push('h3. 🔎 Observables');
-  j.push('|| Type || Value || Source || Disposition ||');
-  if (observables.length) observables.forEach(function(o){ j.push('| ' + o.type + ' | ' + o.value + ' | ' + o.source + ' | ' + (o.disposition || 'Unknown') + ' |'); });
-  else j.push('| — | _No observables extracted._ | — | Unknown |');
+  if (includeAid) {
+    j.push('');
+    j.push('h3. ✅ Evidence Reviewed');
+    if (checkedEvidence.length) checkedEvidence.forEach(function(i){ j.push('* ' + i); });
+    else j.push('No evidence checklist items marked complete.');
 
-  j.push('');
-  j.push('h3. ✅ Evidence Reviewed');
-  if (checkedEvidence.length) checkedEvidence.forEach(function(i){ j.push('* ' + i); });
-  else j.push('No evidence checklist items marked complete.');
+    j.push('');
+    j.push('h3. 🟢 Known-Good / False Positive Checks');
+    if (checkedKnownGood.length) checkedKnownGood.forEach(function(i){ j.push('* ' + i); });
+    else j.push('No known-good checks marked complete.');
 
-  j.push('');
-  j.push('h3. 🟢 Known-Good / False Positive Checks');
-  if (checkedKnownGood.length) checkedKnownGood.forEach(function(i){ j.push('* ' + i); });
-  else j.push('No known-good checks marked complete.');
+    j.push('');
+    j.push('h3. 🧪 Suggested Pivots');
+    if (pivots.length) pivots.slice(0, 12).forEach(function(p){ j.push('* *' + p.name + ':* {{' + p.query + '}}'); });
+    else j.push('No pivots available.');
 
-  j.push('');
-  j.push('h3. 🧪 Suggested Pivots');
-  if (pivots.length) pivots.slice(0, 12).forEach(function(p){ j.push('* *' + p.name + ':* {{' + p.query + '}}'); });
-  else j.push('No pivots available.');
-
-  j.push('');
-  j.push('h3. 🧬 MITRE ATT&CK');
-  var mitreList = uniqValues((rc.mitreTechniques || []).concat(rc.mitreTactics || []));
-  if (mitreList.length) j.push(mitreList.map(function(m){ return '{{' + m + '}}'; }).join(' '));
-  else j.push('_No MITRE mappings extracted._');
-
-  j.push('');
-  j.push('h3. 📖 Rule Description / Investigation Notes');
-  j.push('*Rule Description:* ' + (rc.description || 'Not available.'));
-  j.push('*Embedded Playbook Available:* ' + (rc.note && rc.note.trim() ? 'Yes' : 'No'));
-  j.push('*Rule Query Available:* ' + (rc.query ? 'Yes' : 'No'));
+    j.push('');
+    j.push('h3. 📖 Analyst Aid Summary');
+    j.push('*Embedded Playbook Available:* ' + (rc.note && rc.note.trim() ? 'Yes' : 'No'));
+    j.push('*Rule Query Available:* ' + (rc.query ? 'Yes' : 'No'));
+  }
   return j;
 }
 
@@ -2896,6 +2997,7 @@ function buildMarkdown() {
   }
 
   md.push.apply(md, buildMarkdownTriageSections());
+  md.push.apply(md, buildMarkdownCaseEntitiesSection());
 
   var timelineRowsMd = buildTimelineRowsForReport();
   md.push('', '### 📅 Timeline', '', '| Time | Category | Event |', '| :--- | :--- | :--- |');
@@ -3008,6 +3110,7 @@ function buildJira() {
   }
 
   j.push.apply(j, buildJiraTriageSections());
+  j.push.apply(j, buildJiraCaseEntitiesSection());
 
   j.push('');
   j.push('h3. 📅 Timeline');
@@ -3734,21 +3837,38 @@ function runTriageSupportSmokeTests() {
       normalizeJsonEvent({ fields: { '@timestamp':['2026-05-30T10:02:00Z'], 'hashicorp_vault.audit.request.remote_address':['100.64.96.3'], 'hashicorp_vault.audit.request.operation':['read'], 'event.category':['authentication'] } })
     ];
 
-    var obs = buildObservables();
+    var triageData = buildCaseEntitiesAndObservables();
+    var entities = triageData.entities;
+    var obs = triageData.observables;
     var hasSrc = obs.some(function(o){ return o.type === 'Source IP' && o.value.indexOf('25[.]235[.]94[.]26') !== -1; });
     var hasDst = obs.some(function(o){ return o.type === 'Destination IP' && o.value.indexOf('203[.]0[.]113[.]20') !== -1; });
     var hasUrlOrDomain = obs.some(function(o){ return o.type === 'URL' || o.type === 'Domain'; });
     var hasVaultRemote = obs.some(function(o){ return o.type === 'Source IP' && o.value.indexOf('100[.]64[.]96[.]3') !== -1; });
     var hasVaultOp = obs.some(function(o){ return o.type === 'Vault Operation' && /read/i.test(o.value); });
+    var hasEntityUser = entities.some(function(e){ return e.type === 'User'; });
+    var entityHasDisposition = entities.some(function(e){ return e.disposition != null; });
     assert('observables deduped', obs.length < 20);
     assert('web observables include source/destination/url-domain', hasSrc && hasDst && hasUrlOrDomain);
     assert('vault observables include remote ip and operation', hasVaultRemote && hasVaultOp);
+    assert('factual entities extracted', hasEntityUser);
+    assert('factual entities do not require disposition', !entityHasDisposition);
 
     var pivots = buildSuggestedPivotsFromObservables(obs);
     var hasSourcePivot = pivots.some(function(p){ return /source\.ip/i.test(p.query); });
-    var hasUserPivot = pivots.some(function(p){ return /user\.name/i.test(p.query); });
+    var hasDomainPivot = pivots.some(function(p){ return /url\.original|url\.domain|dns\.question\.name/i.test(p.query); });
     assert('pivot generation includes source ip pivot', hasSourcePivot);
-    assert('pivot generation includes user pivot', hasUserPivot);
+    assert('pivot generation includes domain/url pivot', hasDomainPivot);
+
+    caseState.triage.includeAnalystAidSections = false;
+    var mdDefault = buildMarkdown();
+    assert('default markdown excludes evidence section', mdDefault.indexOf('### ✅ Evidence Reviewed') === -1);
+    assert('default markdown excludes suggested pivots section', mdDefault.indexOf('### 🧪 Suggested Pivots') === -1);
+    assert('default markdown includes compact entities section', mdDefault.indexOf('### 🧩 Case Entities / Observables') !== -1);
+
+    caseState.triage.includeAnalystAidSections = true;
+    var mdWithAid = buildMarkdown();
+    assert('opt-in markdown includes evidence section', mdWithAid.indexOf('### ✅ Evidence Reviewed') !== -1);
+    assert('opt-in markdown includes suggested pivots section', mdWithAid.indexOf('### 🧪 Suggested Pivots') !== -1);
   } finally {
     caseState.events = backup.events;
     caseState.triage = backup.triage;
