@@ -2331,19 +2331,52 @@ function getTriageDraftContext() {
 
 function detectTriageScenario() {
   var c = getTriageDraftContext();
-  var text = (c.ruleName + ' ' + c.process + ' ' + c.commandLine + ' ' + c.url + ' ' + c.domain + ' ' + c.vaultMount + ' ' + c.vaultRequestUri).toLowerCase();
-  var hasVault = text.indexOf('vault') !== -1 || !!(c.vaultOperation && c.vaultOperation !== 'unknown operation') || !!(c.vaultRequestUri && c.vaultRequestUri !== 'request URI not available') || (c.mitre || []).indexOf('T1555') !== -1;
+  var ruleText = String(c.ruleName || '').toLowerCase();
+  var rawEv = getRawAlertEvent();
+  var rawVaultOp = firstValue(rawEv || {}, ['hashicorp_vault.audit.request.operation']);
+  var rawVaultMount = firstValue(rawEv || {}, ['hashicorp_vault.audit.request.mount_point', 'hashicorp_vault.audit.request.mount_type']);
+  var rawVaultReq = firstValue(rawEv || {}, ['hashicorp_vault.audit.request.request_uri']);
+  var rawVaultToken = firstValue(rawEv || {}, ['hashicorp_vault.audit.auth.token_type']);
+  var hasVaultEvidence = !!(rawVaultOp || rawVaultMount || rawVaultReq || rawVaultToken)
+    || (c.events || []).some(function(e){ return !!(e.vaultOperation || e.vaultMountPoint || e.vaultRequestUri || e.vaultTokenType); });
+  var hasVaultRule = /\bvault\b|hashicorp vault|credential access/.test(ruleText);
+  var hasVault = hasVaultEvidence || hasVaultRule;
   if (hasVault) return 'vault';
-  var hasProcess = text.indexOf('powershell') !== -1 || text.indexOf('encoded') !== -1 || text.indexOf('script') !== -1 || (c.process && c.process !== 'unknown process') || (c.commandLine && c.commandLine !== 'command line not available') || (c.mitre || []).some(function(id){ return /^T1059|^T1105/i.test(id); });
+
+  var rawProcName = firstValue(rawEv || {}, ['process.name', 'process.executable', 'process.parent.name']);
+  var rawProcCmd = firstValue(rawEv || {}, ['process.command_line']);
+  var hasProcessEvidence = !!(rawProcName || rawProcCmd)
+    || (c.events || []).some(function(e){ return !!(e.processName || e.commandLine); });
+  var hasProcessRule = /powershell|script|encoded command|process execution/.test(ruleText);
+  var hasProcessMitre = (c.mitre || []).some(function(id){ return /^T1059(\.001)?$/i.test(String(id || '')); });
+  var hasProcess = hasProcessEvidence || hasProcessRule || hasProcessMitre;
   if (hasProcess) return 'process';
-  var hasWeb = text.indexOf('download') !== -1 || text.indexOf('large file') !== -1 || !!(c.url && c.url !== 'unknown URL') || !!(c.domain && c.domain !== 'unknown domain') || !!(c.destinationBytes && c.destinationBytes !== 'unknown transfer size');
+
+  var rawCategory = firstArrayOrValue(rawEv || {}, ['event.category']);
+  var eventHasWebCategory = (c.events || []).some(function(e){ return /\bweb\b/i.test(String(e.category || '')); });
+  var rawHasWebCategory = /\bweb\b/i.test(String(rawCategory || ''));
+  var hasUrlDomain = (c.url && c.url !== 'unknown URL') || (c.domain && c.domain !== 'unknown domain');
+  var hasBytes = c.destinationBytes && c.destinationBytes !== 'unknown transfer size';
+  var hasHttp = (c.events || []).some(function(e){ return !!(e.httpMethod || e.httpStatus); })
+    || !!firstValue(rawEv || {}, ['http.request.method', 'http.response.status_code', 'http.proxy.status_code']);
+  var hasWebRule = /download|large file|\bweb\b|proxy|forcepoint/.test(ruleText);
+  var hasWeb = hasWebRule || eventHasWebCategory || rawHasWebCategory || (hasUrlDomain && hasBytes) || (hasUrlDomain && hasHttp);
   if (hasWeb) return 'web';
   return 'generic';
 }
 
 function buildWhatHappenedDraft(ctx, scenario) {
   if (scenario === 'web') {
-    return 'The alert relates to a large web download involving user ' + ctx.user + ' on ' + ctx.host + '. The primary URL/domain was ' + (ctx.url !== 'unknown URL' ? ctx.url : ctx.domain) + ', with ' + ctx.destinationBytes + ' bytes transferred.';
+    var primaryUrl = ctx.url !== 'unknown URL' ? ctx.url : ctx.domain;
+    var domains = ctx.observables.filter(function(o){ return o.type === 'Domain'; }).map(function(o){ return o.value; });
+    var files = ctx.observables.filter(function(o){ return o.type === 'File Name / Path'; }).map(function(o){ return o.value; });
+    var related = '';
+    if (domains.length > 1 || files.length > 1) {
+      var d = uniqValues(domains).slice(0, 3).join(', ');
+      var f = uniqValues(files).slice(0, 3).join(', ');
+      related = ' Supporting events also show related web activity involving ' + (d || 'related domains') + (f ? ', including ' + f : '') + '.';
+    }
+    return 'The alert relates to a Large File Download involving user ' + ctx.user + ' on ' + ctx.host + '. The primary URL was ' + primaryUrl + ', with ' + ctx.destinationBytes + ' bytes transferred.' + related;
   }
   if (scenario === 'vault') {
     return 'The alert relates to Hashicorp Vault access involving operation ' + ctx.vaultOperation + ' from remote IP ' + ctx.vaultRemoteIp + ' against mount/request path ' + (ctx.vaultRequestUri !== 'request URI not available' ? ctx.vaultRequestUri : ctx.vaultMount) + '.';
@@ -2355,14 +2388,14 @@ function buildWhatHappenedDraft(ctx, scenario) {
 }
 
 function buildEvidenceReviewedDraft(ctx, scenario) {
-  if (scenario === 'web') return 'Supporting timeline events show related web activity before and after the alert. Extracted observables include source IP, destination IP, domain, URL, file name/path, and transfer size.';
+  if (scenario === 'web') return 'Supporting timeline events show authentication/user context, web activity before and after the alert, source/destination IPs, domain/URL, file name/path, and transfer size.';
   if (scenario === 'vault') return 'Timeline events show Vault request activity, token/service account context, related host, and outcome.';
   if (scenario === 'process') return 'Timeline events include authentication context, process execution, network activity, and endpoint detection.';
   return 'Timeline and key alert fields were reviewed, and entities/observables were extracted to support additional validation steps.';
 }
 
 function buildAssessmentRationaleDraft(ctx, scenario) {
-  if (scenario === 'web') return 'The activity is a true positive against the detection logic because the configured large-download threshold was met. Further business-context validation is required before determining whether the activity is benign or suspicious.';
+  if (scenario === 'web') return 'The activity is a true positive against the detection logic because the configured large-download threshold was met. Further validation is required to determine whether the download was expected business activity or suspicious data transfer.';
   if (scenario === 'vault') return 'The activity requires validation because Vault access was observed under a credential-access detection rule. The key triage question is whether the service account/token, source IP, mount point, and access time are expected.';
   if (scenario === 'process') return 'Encoded or suspicious script execution followed by outbound network activity is suspicious and may indicate payload retrieval or post-compromise activity.';
   return 'Current evidence indicates the alert should remain under active triage until expected behaviour and related activity are validated.';
@@ -2371,14 +2404,14 @@ function buildAssessmentRationaleDraft(ctx, scenario) {
 function buildKnownGoodContextDraft(scenario) {
   var known = getCheckedTriageItems('known');
   if (known.length) return 'Known-good checks marked complete include: ' + known.join('; ') + '.';
-  if (scenario === 'web') return 'No confirmed known-good business justification has been recorded yet.';
+  if (scenario === 'web') return 'No confirmed business justification or known-good explanation has been recorded yet.';
   if (scenario === 'vault') return 'No confirmed automation/change context has been recorded yet.';
   if (scenario === 'process') return 'No approved admin/script or software deployment context has been recorded yet.';
   return 'No confirmed known-good explanation has been recorded yet.';
 }
 
 function buildRemainingGapsDraft(scenario) {
-  if (scenario === 'web') return 'Confirm whether the download was expected business activity, whether the domain is approved/expected, and whether the user/UAD behaviour is normal.';
+  if (scenario === 'web') return 'Confirm whether the domain and downloaded file are expected for the user/unit, whether the UAD is expected for this user, and whether there is a valid business requirement or ticket for the download.';
   if (scenario === 'vault') return 'Confirm source IP ownership, service account owner, approved automation/change record, and whether the mount/request URI is expected.';
   if (scenario === 'process') return 'Decode/validate command content, confirm parent process, check EDR process tree, and validate destination reputation.';
   return 'Validate expected behaviour for the user/host, review related alerts, and collect additional corroborating evidence before final judgement.';
@@ -4764,9 +4797,15 @@ function runTriageSupportSmokeTests() {
     }});
     onRawChange();
     generateDraftTriageNotes('overwrite');
-    assert('web scenario draft generation includes large download context', /large web download/i.test(caseState.triageAnalysis.whatHappened || ''));
+    assert('web large-download scenario detection returns web', detectTriageScenario() === 'web');
+    assert('web scenario draft generation includes large download context', /Large File Download/i.test(caseState.triageAnalysis.whatHappened || ''));
+    assert('web what happened includes user host url and bytes', /mitchellt110/i.test(caseState.triageAnalysis.whatHappened || '') && /RUDBU620055/i.test(caseState.triageAnalysis.whatHappened || '') && /aidu\.mod\.uk/i.test(caseState.triageAnalysis.whatHappened || '') && /14154825 bytes transferred/i.test(caseState.triageAnalysis.whatHappened || ''));
+    assert('web what happened excludes process wording', !/process execution|unknown process|encoded or suspicious script|decode\/validate command/i.test(caseState.triageAnalysis.whatHappened || ''));
+    assert('web initial assessment defaults to requires validation', (caseState.triageAnalysis.initialAssessment || '') === 'Requires Validation');
     var webQuestions = document.getElementById('triage-suggested-questions').textContent || '';
     assert('suggested questions generated for web scenario', /domain expected for the user\/unit/i.test(webQuestions));
+    var webHint = document.getElementById('triage_suggested_action_hint').textContent || '';
+    assert('web suggested action hint remains request more evidence', /Suggested action: Request More Evidence \/ Confirm Business Use/i.test(webHint));
 
     caseState.triageAnalysis.whatHappened = 'Analyst-written narrative';
     caseState.triageAnalysis.evidenceReviewed = '';
@@ -4829,6 +4868,7 @@ function runTriageSupportSmokeTests() {
     }});
     onRawChange();
     generateDraftTriageNotes('overwrite');
+    assert('powershell scenario detection returns process', detectTriageScenario() === 'process');
     assert('powershell scenario draft generation includes process context', /process execution/i.test(caseState.triageAnalysis.whatHappened || ''));
     var processQuestions = document.getElementById('triage-suggested-questions').textContent || '';
     assert('suggested questions generated for process scenario', /encoded or obfuscated/i.test(processQuestions));
