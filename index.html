@@ -898,12 +898,28 @@ var customFields  = [];
 // caseState keeps multi-event timeline intake data isolated from legacy fields.
 var caseState = {
   events: [],
-  parsedEventsBuffer: []
+  parsedEventsBuffer: [],
+  ruleContext: {
+    name: '',
+    description: '',
+    note: '',
+    query: '',
+    severity: '',
+    riskScore: '',
+    mitreTechniques: [],
+    mitreTactics: [],
+    references: [],
+    sourceFields: {}
+  }
 };
 var SECTION_ORDER = ['sec-alert', 'sec-timeline', 'sec-intake', 'sec-triage', 'sec-conclusion'];
 var currentFormat = 'md';
 
 var FIELDS = [
+  "kibana.alert.rule.name",
+  "kibana.alert.severity",
+  "kibana.alert.rule.severity",
+  "event.severity",
   "kibana.alert.rule.threat.tactic.name",
   "signal.rule.threat.technique.name","kibana.alert.rule.threat.technique.id",
   "kibana.alert.reason",
@@ -913,13 +929,17 @@ var FIELDS = [
   "source.enrichment.site_name_and_system",
   "destination.ip","destination.port","source.ip","source.port",
   "destination.bytes","user_agent.original",
-  "http.proxy.status_code","hashicorp_vault.audit.request.headers.user-agent","event.action","event.category","http.request.method","user.domain",
+  "http.response.status_code","http.proxy.status_code","hashicorp_vault.audit.request.headers.user-agent","event.action","event.category","http.request.method","user.domain",
   "email.from.address",
   "email.direction","network.bytes","email.cc.address",
 ];
 
 // Human-friendly field label overrides
 var FIELD_LABELS = {
+  "kibana.alert.rule.name":                              "Rule Name",
+  "kibana.alert.severity":                               "Alert Severity",
+  "kibana.alert.rule.severity":                          "Rule Severity",
+  "event.severity":                                      "Event Severity",
   "kibana.alert.rule.threat.tactic.name":                "MITRE Tactic",
   "signal.rule.threat.technique.name":                   "MITRE Technique",
   "kibana.alert.rule.threat.technique.id":               "MITRE Technique ID",
@@ -943,6 +963,7 @@ var FIELD_LABELS = {
   "source.port":                                         "Source Port",
   "destination.bytes":                                   "Bytes Transferred",
   "user_agent.original":                                 "User Agent",
+  "http.response.status_code":                           "HTTP Status Code",
   "http.proxy.status_code":                              "Proxy Status Code",
   "hashicorp_vault.audit.request.headers.user-agent":    "Vault User Agent",
   "event.action":                                        "Event Action",
@@ -1067,6 +1088,7 @@ function saveToStorage() {
     localStorage.setItem('soc_timeline', JSON.stringify(timelineData));
     localStorage.setItem('soc_case_events', JSON.stringify(caseState.events));
     localStorage.setItem('soc_parsed_events', JSON.stringify(caseState.parsedEventsBuffer));
+    localStorage.setItem('soc_rule_context', JSON.stringify(caseState.ruleContext));
     localStorage.setItem('soc_links',    JSON.stringify(externalLinks));
     var selStep = document.querySelector('input[name="next-step"]:checked');
     var stepsData = {
@@ -1102,6 +1124,7 @@ function loadFromStorage() {
     var tl = localStorage.getItem('soc_timeline'); if (tl) timelineData = JSON.parse(tl);
     var ce = localStorage.getItem('soc_case_events'); if (ce) caseState.events = JSON.parse(ce);
     var pe = localStorage.getItem('soc_parsed_events'); if (pe) caseState.parsedEventsBuffer = JSON.parse(pe);
+    var rc = localStorage.getItem('soc_rule_context'); if (rc) caseState.ruleContext = JSON.parse(rc);
     var lk = localStorage.getItem('soc_links');    if (lk) externalLinks = JSON.parse(lk);
     var stepsRaw = localStorage.getItem('soc_steps');
     if (stepsRaw) {
@@ -1177,6 +1200,10 @@ function extractField(json, field) {
   } catch(e) { return ''; }
 }
 
+function parseJsonSafe(text) {
+  try { return JSON.parse(text); } catch(e) { return null; }
+}
+
 // ── MULTI-JSON INTAKE ───────────────────────────────────────────────────────
 var eventIdCounter = 0;
 
@@ -1185,67 +1212,229 @@ function makeEventId() {
   return 'evt_' + Date.now() + '_' + eventIdCounter;
 }
 
-function getPathValue(obj, path) {
-  if (!obj || typeof obj !== 'object') return '';
-  if (Object.prototype.hasOwnProperty.call(obj, path) && obj[path] != null) return obj[path];
-  var parts = path.split('.');
+// Elastic/Kibana field-alignment helpers.
+// Handles flat keys, nested paths, _source mirrors, and fields[fieldName] arrays.
+function isUsefulValue(value) {
+  if (value == null) return false;
+  if (typeof value === 'string') return value.trim() !== '';
+  if (Array.isArray(value)) return value.some(isUsefulValue);
+  if (typeof value === 'object') return Object.keys(value).length > 0;
+  return true;
+}
+
+function toPathParts(path) {
+  return String(path || '').replace(/\[(\d+)\]/g, '.$1').split('.').filter(function(p){ return p !== ''; });
+}
+
+function getNestedPathValue(obj, path) {
+  if (!obj || typeof obj !== 'object') return undefined;
+  var parts = toPathParts(path);
   var cur = obj;
   for (var i = 0; i < parts.length; i++) {
-    if (cur == null || typeof cur !== 'object' || !(parts[i] in cur)) return '';
+    if (cur == null) return undefined;
+    if (Array.isArray(cur) && /^\d+$/.test(parts[i])) {
+      var idx = parseInt(parts[i], 10);
+      cur = cur[idx];
+      continue;
+    }
+    if (typeof cur !== 'object' || !(parts[i] in cur)) return undefined;
     cur = cur[parts[i]];
   }
-  return cur == null ? '' : cur;
+  return cur;
+}
+
+function flattenValueList(value) {
+  if (!isUsefulValue(value)) return [];
+  if (Array.isArray(value)) {
+    var out = [];
+    value.forEach(function(v){ out = out.concat(flattenValueList(v)); });
+    return out;
+  }
+  return [value];
+}
+
+function uniqValues(values) {
+  var seen = {};
+  var out = [];
+  values.forEach(function(v) {
+    var key;
+    if (typeof v === 'object') key = 'obj:' + JSON.stringify(v);
+    else key = typeof v + ':' + String(v);
+    if (seen[key]) return;
+    seen[key] = true;
+    out.push(v);
+  });
+  return out;
+}
+
+function getElasticFieldValues(raw, fieldName) {
+  var values = [];
+  if (!raw || typeof raw !== 'object') return values;
+
+  var candidates = [];
+  if (Object.prototype.hasOwnProperty.call(raw, fieldName)) candidates.push(raw[fieldName]);
+  var nestedRoot = getNestedPathValue(raw, fieldName);
+  if (nestedRoot !== undefined) candidates.push(nestedRoot);
+
+  if (raw._source && typeof raw._source === 'object') {
+    if (Object.prototype.hasOwnProperty.call(raw._source, fieldName)) candidates.push(raw._source[fieldName]);
+    var nestedSource = getNestedPathValue(raw._source, fieldName);
+    if (nestedSource !== undefined) candidates.push(nestedSource);
+  }
+
+  if (raw.fields && typeof raw.fields === 'object' && Object.prototype.hasOwnProperty.call(raw.fields, fieldName)) {
+    candidates.push(raw.fields[fieldName]);
+  }
+  if (raw._source && raw._source.fields && typeof raw._source.fields === 'object' && Object.prototype.hasOwnProperty.call(raw._source.fields, fieldName)) {
+    candidates.push(raw._source.fields[fieldName]);
+  }
+
+  candidates.forEach(function(c) { values = values.concat(flattenValueList(c)); });
+  return uniqValues(values.filter(isUsefulValue));
+}
+
+function getElasticField(raw, fieldName, fallback) {
+  var values = getElasticFieldValues(raw, fieldName);
+  if (values.length) return values[0];
+  return fallback == null ? '' : fallback;
+}
+
+function valueToText(value) {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (Array.isArray(value)) return value.map(valueToText).filter(function(v){ return v !== ''; }).join(', ');
+  if (typeof value === 'object') {
+    try { return JSON.stringify(value); } catch(e) { return ''; }
+  }
+  return '';
 }
 
 function firstValue(obj, paths) {
   for (var i = 0; i < paths.length; i++) {
-    var v = getPathValue(obj, paths[i]);
-    if (Array.isArray(v)) {
-      if (v.length) return String(v[0]);
-      continue;
-    }
-    if (v !== '' && v != null) return String(v);
+    var v = getElasticField(obj, paths[i], '');
+    if (isUsefulValue(v)) return valueToText(v);
   }
   return '';
 }
 
 function firstArrayOrValue(obj, paths) {
   for (var i = 0; i < paths.length; i++) {
-    var v = getPathValue(obj, paths[i]);
-    if (Array.isArray(v) && v.length) return v.map(function(x){ return String(x); }).join(', ');
-    if (v !== '' && v != null) return String(v);
+    var vals = getElasticFieldValues(obj, paths[i]).map(valueToText).filter(function(v){ return v !== ''; });
+    if (vals.length) return vals.join(', ');
   }
   return '';
 }
 
+function firstValuesArray(obj, paths) {
+  for (var i = 0; i < paths.length; i++) {
+    var vals = getElasticFieldValues(obj, paths[i]).map(valueToText).filter(function(v){ return v !== ''; });
+    if (vals.length) return vals;
+  }
+  return [];
+}
+
 function unwrapEventDocument(rawEvent) {
   if (!rawEvent || typeof rawEvent !== 'object') return {};
+  // Keep root + _source + fields flattened so normalizers can resolve either shape.
   if (rawEvent._source && typeof rawEvent._source === 'object') {
     var merged = {};
     Object.keys(rawEvent).forEach(function(k){ merged[k] = rawEvent[k]; });
     Object.keys(rawEvent._source).forEach(function(k){ merged[k] = rawEvent._source[k]; });
+    if (rawEvent.fields && typeof rawEvent.fields === 'object') merged.fields = rawEvent.fields;
+    if (rawEvent._source.fields && typeof rawEvent._source.fields === 'object') {
+      merged.fields = merged.fields || {};
+      Object.keys(rawEvent._source.fields).forEach(function(k){ merged.fields[k] = rawEvent._source.fields[k]; });
+    }
     return merged;
   }
+  if (rawEvent.fields && typeof rawEvent.fields === 'object') {
+    var shallow = {};
+    Object.keys(rawEvent).forEach(function(k){ shallow[k] = rawEvent[k]; });
+    return shallow;
+  }
   return rawEvent;
+}
+
+function extractRuleContext(rawEvent, event) {
+  var ctx = {
+    name: firstValue(event, ['kibana.alert.rule.name', 'signal.rule.name', 'rule.name']),
+    description: firstValue(event, ['kibana.alert.rule.description', 'signal.rule.description', 'kibana.alert.rule.parameters[0].description', 'rule.description']),
+    note: firstValue(event, ['kibana.alert.rule.note', 'signal.rule.note', 'kibana.alert.rule.parameters[0].note', 'rule.note']),
+    query: firstValue(event, ['kibana.alert.rule.parameters[0].query', 'signal.rule.query', 'rule.query']),
+    severity: firstValue(event, ['kibana.alert.severity', 'kibana.alert.rule.severity', 'signal.rule.severity', 'event.severity', 'severity']),
+    riskScore: firstValue(event, ['kibana.alert.risk_score', 'kibana.alert.rule.risk_score', 'signal.rule.risk_score']),
+    mitreTechniques: firstValuesArray(event, ['kibana.alert.rule.threat.technique.id', 'signal.rule.threat.technique.id', 'kibana.alert.rule.threat.technique.name', 'signal.rule.threat.technique.name']),
+    mitreTactics: firstValuesArray(event, ['kibana.alert.rule.threat.tactic.id', 'signal.rule.threat.tactic.id', 'kibana.alert.rule.threat.tactic.name', 'signal.rule.threat.tactic.name']),
+    references: firstValuesArray(event, ['kibana.alert.rule.references', 'signal.rule.references', 'rule.references']),
+    sourceFields: {
+      hasFieldsObject: !!(rawEvent && rawEvent.fields),
+      hasSourceFieldsObject: !!(rawEvent && rawEvent._source && rawEvent._source.fields)
+    }
+  };
+  return ctx;
+}
+
+function mergeRuleContext(nextCtx) {
+  if (!nextCtx) return;
+  var target = caseState.ruleContext || {};
+  ['name', 'description', 'note', 'query', 'severity', 'riskScore'].forEach(function(k) {
+    if (!target[k] && nextCtx[k]) target[k] = nextCtx[k];
+  });
+  target.mitreTechniques = uniqValues((target.mitreTechniques || []).concat(nextCtx.mitreTechniques || []));
+  target.mitreTactics = uniqValues((target.mitreTactics || []).concat(nextCtx.mitreTactics || []));
+  target.references = uniqValues((target.references || []).concat(nextCtx.references || []));
+  target.sourceFields = target.sourceFields || {};
+  Object.keys(nextCtx.sourceFields || {}).forEach(function(k) { target.sourceFields[k] = nextCtx.sourceFields[k]; });
+  caseState.ruleContext = target;
 }
 
 function normalizeJsonEvent(rawEvent) {
   var event = unwrapEventDocument(rawEvent);
   var warnings = [];
-  var ts = firstValue(event, ['@timestamp', 'timestamp', 'event.created', 'event.ingested', '_source.@timestamp']);
-  var category = firstArrayOrValue(event, ['event.category', 'event.kind', 'data_stream.dataset', 'winlog.channel']);
-  var eventAction = firstArrayOrValue(event, ['event.action', 'event.type', 'rule.name', 'message']);
+  var ts = firstValue(event, ['@timestamp', 'kibana.alert.original_time', 'signal.original_time', 'event.created', 'event.ingested', 'timestamp']);
+  var ruleName = firstValue(event, ['kibana.alert.rule.name', 'signal.rule.name', 'rule.name']);
+  var severity = firstValue(event, ['kibana.alert.severity', 'kibana.alert.rule.severity', 'signal.rule.severity', 'event.severity', 'severity', 'log.level']);
+  var riskScore = firstValue(event, ['kibana.alert.risk_score', 'kibana.alert.rule.risk_score', 'signal.rule.risk_score']);
+  var alertReason = firstValue(event, ['kibana.alert.reason', 'kibana.alert.reason.text', 'signal.reason', 'message']);
+  var category = firstArrayOrValue(event, ['event.category', 'kibana.alert.original_event.category', 'signal.original_event.category', 'event.kind', 'data_stream.dataset', 'winlog.channel']);
+  var eventAction = firstArrayOrValue(event, ['event.action', 'kibana.alert.original_event.action', 'signal.original_event.action', 'hashicorp_vault.audit.request.operation', 'event.type', 'rule.name']);
+  var eventOutcome = firstValue(event, ['event.outcome', 'kibana.alert.original_event.outcome', 'signal.original_event.outcome']);
   var host = firstValue(event, ['host.name', 'host.hostname', 'computer_name', 'winlog.computer_name']);
-  var user = firstValue(event, ['user.name', 'user.id', 'winlog.event_data.TargetUserName', 'winlog.event_data.SubjectUserName']);
-  var sourceIp = firstValue(event, ['source.ip', 'client.ip', 'src_ip', 'winlog.event_data.IpAddress']);
-  var destinationIp = firstValue(event, ['destination.ip', 'server.ip', 'dst_ip']);
-  var url = firstValue(event, ['url.full', 'url.original', 'http.request.referrer']);
+  var relatedHosts = firstValuesArray(event, ['related.hosts', 'host.hostname', 'host.name']);
+  var user = firstValue(event, ['user.name', 'user.name.text', 'user.id', 'loginID', 'user.domain', 'winlog.event_data.TargetUserName', 'winlog.event_data.SubjectUserName']);
+  var sourceIp = firstValue(event, ['source.ip', 'hashicorp_vault.audit.request.remote_address', 'client.ip', 'src_ip', 'src_host', 'winlog.event_data.IpAddress']);
+  var sourcePort = firstValue(event, ['source.port', 'hashicorp_vault.audit.request.remote_port', 'src_port']);
+  var destinationIp = firstValue(event, ['destination.ip', 'dst_ip', 'dst_host', 'server.ip']);
+  var destinationPort = firstValue(event, ['destination.port', 'dst_port']);
+  var url = firstValue(event, ['url.original', 'url.full', 'http.request.referrer']);
+  var domain = firstValue(event, ['url.domain', 'dst_host']);
   var processName = firstValue(event, ['process.name', 'process.executable', 'process.command_line', 'winlog.event_data.ProcessName', 'winlog.event_data.NewProcessName']);
-  var ruleName = firstValue(event, ['rule.name', 'kibana.alert.rule.name', 'signal.rule.name']);
-  var severity = firstValue(event, ['event.severity', 'log.level', 'kibana.alert.severity']);
+  var destinationBytes = firstValue(event, ['destination.bytes']);
+  var bytesIn = firstValue(event, ['bytes_in', 'source.bytes']);
+  var bytesOut = firstValue(event, ['bytes_out']);
+  var httpMethod = firstValue(event, ['http.request.method', 'http_method']);
+  var httpStatus = firstValue(event, ['http.response.status_code', 'http.proxy.status_code', 'http_response']);
+  var userAgent = firstValue(event, ['user_agent.original', 'user_agent.original.text', 'traefik.access.user_agent.original', 'http_user_agent']);
+  var mimeType = firstValue(event, ['http.response.mime_type', 'http_content_type']);
+  var siteName = firstValue(event, ['source.enrichment.site_name_and_system']);
+  var machineName = firstValue(event, ['source.enrichment.machine_name']);
+  var observerProduct = firstValue(event, ['observer.product', 'vendor', 'product_ver']);
+  var vaultOperation = firstValue(event, ['hashicorp_vault.audit.request.operation', 'event.action']);
+  var vaultMountType = firstValue(event, ['hashicorp_vault.audit.request.mount_type']);
+  var vaultMountPoint = firstValue(event, ['hashicorp_vault.audit.request.mount_point']);
+  var vaultRequestUri = firstValue(event, ['hashicorp_vault.audit.request.request_uri']);
+  var vaultTokenType = firstValue(event, ['hashicorp_vault.audit.auth.token_type']);
+  var vaultPolicyAllowed = firstValue(event, ['hashicorp_vault.audit.auth.policy_results.allowed']);
+  var mitreTechniques = firstValuesArray(event, ['kibana.alert.rule.threat.technique.id', 'signal.rule.threat.technique.id', 'kibana.alert.rule.threat.technique.name', 'signal.rule.threat.technique.name']);
+  var mitreTactics = firstValuesArray(event, ['kibana.alert.rule.threat.tactic.id', 'signal.rule.threat.tactic.id', 'kibana.alert.rule.threat.tactic.name', 'signal.rule.threat.tactic.name']);
+
+  var ruleContext = extractRuleContext(rawEvent, event);
+  mergeRuleContext(ruleContext);
 
   if (!ts) warnings.push('Missing timestamp');
   if (!host) warnings.push('Missing host');
+  if (!ruleName) warnings.push('Missing rule name');
   if (!category) {
     if (ruleName) category = 'Alert';
     else if (processName) category = 'Process';
@@ -1263,14 +1452,40 @@ function normalizeJsonEvent(rawEvent) {
     category: category,
     sourceType: ruleName ? 'alert' : 'log',
     eventAction: eventAction,
+    eventOutcome: eventOutcome,
     host: host,
     user: user,
     sourceIp: sourceIp,
+    sourcePort: sourcePort,
     destinationIp: destinationIp,
+    destinationPort: destinationPort,
     url: url,
+    domain: domain,
     processName: processName,
     ruleName: ruleName,
     severity: severity,
+    riskScore: riskScore,
+    bytesIn: bytesIn,
+    bytesOut: bytesOut,
+    destinationBytes: destinationBytes,
+    httpMethod: httpMethod,
+    httpStatus: httpStatus,
+    userAgent: userAgent,
+    mimeType: mimeType,
+    siteName: siteName,
+    machineName: machineName,
+    observerProduct: observerProduct,
+    vaultOperation: vaultOperation,
+    vaultMountType: vaultMountType,
+    vaultMountPoint: vaultMountPoint,
+    vaultRequestUri: vaultRequestUri,
+    vaultTokenType: vaultTokenType,
+    vaultPolicyAllowed: vaultPolicyAllowed,
+    relatedHosts: relatedHosts,
+    mitreTechniques: mitreTechniques,
+    mitreTactics: mitreTactics,
+    alertReason: alertReason,
+    ruleContext: ruleContext,
     analystSummary: '',
     raw: rawEvent,
     parserWarnings: warnings
@@ -1282,8 +1497,39 @@ function normalizeJsonEvent(rawEvent) {
 
 function buildSuggestedTimelineSummary(ev) {
   var cat = (ev.category || '').toLowerCase();
-  if (cat.indexOf('auth') !== -1 || (ev.eventAction || '').toLowerCase().indexOf('logon') !== -1) {
-    return 'Authentication event observed for user ' + (ev.user || 'unknown user') + ' on host ' + (ev.host || 'unknown host') + (ev.sourceIp ? ' from source IP ' + defangIp(ev.sourceIp) : '') + '.';
+  var action = (ev.eventAction || '').toLowerCase();
+  var outcomeText = ev.eventOutcome ? '; outcome was ' + ev.eventOutcome : '';
+
+  var looksWeb = !!(ev.url || ev.domain || ev.httpMethod || ev.httpStatus || ev.destinationBytes || ev.bytesIn || cat.indexOf('web') !== -1);
+  if (looksWeb) {
+    var webTarget = ev.domain || ev.url || 'unknown destination';
+    var bytes = ev.destinationBytes || ev.bytesIn || ev.bytesOut;
+    var fileName = '';
+    var srcForName = ev.url || '';
+    if (srcForName && srcForName.indexOf('/') !== -1) {
+      var parts = srcForName.split('/');
+      fileName = parts[parts.length - 1] || '';
+    }
+    return 'Web download observed for user ' + (ev.user || 'unknown user')
+      + (ev.sourceIp ? ' from source ' + defangIp(ev.sourceIp) : '')
+      + ' to ' + (webTarget.indexOf('http') === 0 ? defangUrl(webTarget) : defangIfNeeded(webTarget, 'url.domain'))
+      + (fileName ? ', downloading ' + fileName : '')
+      + (bytes ? ' with ' + bytes + ' bytes received.' : '.');
+  }
+
+  if (ev.vaultOperation || action.indexOf('vault') !== -1 || ev.vaultMountType || ev.vaultTokenType) {
+    var vaultSummary = 'Hashicorp Vault ' + (ev.vaultOperation || ev.eventAction || 'request')
+      + ' observed'
+      + (ev.sourceIp ? ' from ' + defangIp(ev.sourceIp) : '')
+      + (ev.vaultTokenType ? ' using token type ' + ev.vaultTokenType : '')
+      + (ev.eventOutcome ? '; outcome was ' + ev.eventOutcome : '');
+    return vaultSummary + '.';
+  }
+
+  if (cat.indexOf('auth') !== -1 || action.indexOf('logon') !== -1 || action.indexOf('auth') !== -1) {
+    return 'Authentication event observed for user ' + (ev.user || 'unknown user')
+      + (ev.sourceIp ? ' from source ' + defangIp(ev.sourceIp) : '')
+      + outcomeText + '.';
   }
   if (ev.processName || cat.indexOf('process') !== -1) {
     return 'Process ' + (ev.processName || 'unknown process') + ' executed on host ' + (ev.host || 'unknown host') + (ev.user ? ' by user ' + ev.user : '') + '.';
@@ -1297,7 +1543,7 @@ function buildSuggestedTimelineSummary(ev) {
   if (ev.ruleName || cat.indexOf('alert') !== -1) {
     return 'SIEM alert triggered: ' + (ev.ruleName || ev.eventAction || 'Unnamed rule') + '.';
   }
-  return 'Event observed on ' + (ev.host || 'unknown host') + (ev.user ? ' involving ' + ev.user : '') + (ev.eventAction ? ' with action ' + ev.eventAction : '') + '.';
+  return 'Event observed on ' + (ev.host || 'unknown host') + (ev.user ? ' involving ' + ev.user : '') + (ev.eventAction ? ' with action ' + ev.eventAction : '') + outcomeText + '.';
 }
 
 function buildEventFingerprint(rawEvent, normalizedEvent) {
@@ -1538,6 +1784,10 @@ function resetAllSilent() {
   timelineData = []; externalLinks = [];
   caseState.events = [];
   caseState.parsedEventsBuffer = [];
+  caseState.ruleContext = {
+    name: '', description: '', note: '', query: '', severity: '', riskScore: '',
+    mitreTechniques: [], mitreTactics: [], references: [], sourceFields: {}
+  };
   ['raw_input','json_intake_input','impact','tl_desc','link_title','link_url','analysis','summary','report_title','escalate-detail','tune-detail'].forEach(function(id){
     var el = document.getElementById(id); if (el) el.value = '';
   });
@@ -1590,6 +1840,11 @@ function onRawChange() {
     }
   }
   if (raw.trim()) {
+    var rawObj = parseJsonSafe(raw);
+    if (rawObj && typeof rawObj === 'object') {
+      var rawEventObj = unwrapEventDocument(rawObj);
+      mergeRuleContext(extractRuleContext(rawObj, rawEventObj));
+    }
     var alertTs   = extractField(raw, 'kibana.alert.original_time');
     var eventTs   = extractField(raw, '@timestamp');
     var ts        = alertTs || eventTs;
@@ -1859,19 +2114,35 @@ function extractLongField(json, field) {
 function renderRuleDescPanel(raw) {
   var panel = document.getElementById('rule-desc-panel');
   var el    = document.getElementById('rule-desc-text');
-  var desc  = extractField(raw, 'kibana.alert.rule.description');
+  var parsed = parseJsonSafe(raw);
+  var parsedEvent = parsed ? unwrapEventDocument(parsed) : null;
+  var desc = parsedEvent
+    ? firstValue(parsedEvent, ['kibana.alert.rule.description', 'signal.rule.description', 'kibana.alert.rule.parameters[0].description', 'rule.description'])
+    : '';
+  if (!desc) desc = extractField(raw, 'kibana.alert.rule.description');
+  if (!desc) desc = extractField(raw, 'signal.rule.description');
   if (!desc || !desc.trim()) { panel.style.display = 'none'; }
   else { el.innerHTML = escHtml(desc).replace(/\\n/g, "<br>").replace(/\n/g, "<br>"); panel.style.display = 'block'; }
 
   // Extract investigation guide from rule.note
   var guidePanel = document.getElementById('inv-guide-panel');
-  var note = extractLongField(raw, 'kibana.alert.rule.note');
+  var note = parsedEvent
+    ? firstValue(parsedEvent, ['kibana.alert.rule.note', 'signal.rule.note', 'kibana.alert.rule.parameters[0].note', 'rule.note'])
+    : '';
+  if (!note) note = extractLongField(raw, 'kibana.alert.rule.note');
+  if (!note) note = extractLongField(raw, 'signal.rule.note');
   if (note && note.trim()) {
     investigationGuideText = note;
     guidePanel.style.display = 'block';
   } else {
     investigationGuideText = '';
     guidePanel.style.display = 'none';
+  }
+
+  // Store query context for future triage support even though no dedicated UI panel yet.
+  if (parsedEvent) {
+    var q = firstValue(parsedEvent, ['kibana.alert.rule.parameters[0].query', 'signal.rule.query', 'rule.query']);
+    if (q && !caseState.ruleContext.query) caseState.ruleContext.query = q;
   }
 }
 
@@ -2653,6 +2924,10 @@ function resetKeepJson() {
   timelineData = []; externalLinks = [];
   caseState.events = [];
   caseState.parsedEventsBuffer = [];
+  caseState.ruleContext = {
+    name: '', description: '', note: '', query: '', severity: '', riskScore: '',
+    mitreTechniques: [], mitreTactics: [], references: [], sourceFields: {}
+  };
   document.getElementById('json_intake_input').value = '';
   ['impact','tl_desc','link_title','link_url','analysis','summary','report_title','escalate-detail','tune-detail'].forEach(function(id){
     document.getElementById(id).value = '';
@@ -2698,6 +2973,10 @@ function resetAll() {
   timelineData = []; externalLinks = [];
   caseState.events = [];
   caseState.parsedEventsBuffer = [];
+  caseState.ruleContext = {
+    name: '', description: '', note: '', query: '', severity: '', riskScore: '',
+    mitreTechniques: [], mitreTactics: [], references: [], sourceFields: {}
+  };
   ['raw_input','json_intake_input','impact','tl_desc','link_title','link_url','analysis','summary','report_title','escalate-detail','tune-detail'].forEach(function(id){
     document.getElementById(id).value = '';
   });
@@ -2763,6 +3042,50 @@ function runTimelineParserSmokeTests() {
   var n1 = normalizeJsonEvent(rawEvent);
   var n2 = normalizeJsonEvent(rawEvent);
   assert('dedupe fingerprint stable', n1.fingerprint === n2.fingerprint);
+
+  var webFieldsEvent = {
+    fields: {
+      '@timestamp': ['2026-05-30T10:10:00Z'],
+      'user.name': ['mitchellt110'],
+      'source.ip': ['25.235.94.26'],
+      'destination.ip': ['203.0.113.20'],
+      'url.original': ['https://www.aidu.mod.uk/files/My-Products-Large.mp4'],
+      'url.domain': ['www.aidu.mod.uk'],
+      'destination.bytes': [14154825],
+      'http.request.method': ['GET'],
+      'http.response.status_code': [200],
+      'user_agent.original': ['Mozilla/5.0'],
+      'kibana.alert.rule.name': ['Large File Download'],
+      'kibana.alert.severity': ['high'],
+      'kibana.alert.rule.note': ['# Large File Download playbook']
+    }
+  };
+  var webNorm = normalizeJsonEvent(webFieldsEvent);
+  assert('fields web alert source ip extracted', webNorm.sourceIp === '25.235.94.26');
+  assert('fields web alert destination ip extracted', webNorm.destinationIp === '203.0.113.20');
+  assert('fields web alert user extracted', webNorm.user === 'mitchellt110');
+  assert('fields web alert url extracted', webNorm.url.indexOf('aidu.mod.uk') !== -1);
+  assert('fields web alert destination bytes extracted', String(webNorm.destinationBytes) === '14154825');
+
+  var vaultFieldsEvent = {
+    fields: {
+      '@timestamp': ['2026-05-30T10:12:00Z'],
+      'kibana.alert.rule.name': ['Potential Vault Credential Access'],
+      'kibana.alert.severity': ['medium'],
+      'hashicorp_vault.audit.request.remote_address': ['100.64.96.3'],
+      'hashicorp_vault.audit.request.operation': ['read'],
+      'hashicorp_vault.audit.auth.token_type': ['service'],
+      'event.outcome': ['success'],
+      'hashicorp_vault.audit.request.mount_type': ['kv'],
+      'related.hosts': ['vault-node-01'],
+      'kibana.alert.rule.threat.technique.id': ['T1555']
+    }
+  };
+  var vaultNorm = normalizeJsonEvent(vaultFieldsEvent);
+  assert('fields vault remote ip extracted', vaultNorm.sourceIp === '100.64.96.3');
+  assert('fields vault operation extracted', vaultNorm.vaultOperation === 'read');
+  assert('fields vault token type extracted', vaultNorm.vaultTokenType === 'service');
+  assert('fields vault outcome extracted', vaultNorm.eventOutcome === 'success');
 
   var passCount = tests.filter(function(t){ return t.pass; }).length;
   console.log('[Timeline Intake Smoke Tests] ' + passCount + '/' + tests.length + ' passed');
