@@ -99,6 +99,44 @@
   #left::-webkit-scrollbar { width: 4px; }
   #left::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
 
+  /* ── WORKSPACE TABS ── */
+  .work-tabs {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 12px;
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    background: var(--bg);
+    padding-bottom: 8px;
+  }
+  .work-tab-btn {
+    font-family: var(--mono); font-size: 10px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    padding: 6px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border2);
+    background: var(--bg3);
+    color: var(--text2);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .work-tab-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .work-tab-btn.active {
+    background: var(--accent2);
+    color: #fff;
+    border-color: var(--accent);
+  }
+  .work-tab-pane { display: none; }
+  .work-tab-pane.active { display: block; }
+  #analyst-aid-tab {
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 10px;
+    background: var(--bg2);
+    margin-bottom: 8px;
+  }
+
   /* ── RIGHT ── */
   #right {
     flex: 1; display: flex; flex-direction: column; overflow: hidden;
@@ -679,7 +717,17 @@
     <!-- ══ LEFT ══ -->
     <div id="left">
 
-      <div class="section" id="sec-alert">
+      <div class="work-tabs">
+        <button id="work-tab-btn-case" class="work-tab-btn active" onclick="setWorkTab('case-builder')">Case Builder</button>
+        <button id="work-tab-btn-aid" class="work-tab-btn" onclick="setWorkTab('analyst-aid')">Analyst Aid</button>
+      </div>
+
+      <div id="analyst-aid-tab" class="work-tab-pane">
+        <div class="info" style="margin-bottom:10px;">Use this workspace for investigation support while building the case report in Case Builder.</div>
+        <div id="analyst-aid-content"></div>
+      </div>
+
+      <div class="section case-builder-section" id="sec-alert">
         <div class="section-header" onclick="toggleSection('sec-alert')">
           <span class="section-status" id="sec-alert-dot"></span>
           <span>📋</span><span class="section-title">Alert Data</span>
@@ -714,7 +762,7 @@
         </div><!-- /section-body -->
       </div>
 
-      <div class="section" id="sec-timeline">
+      <div class="section case-builder-section" id="sec-timeline">
         <div class="section-header" onclick="toggleSection('sec-timeline')">
           <span class="section-status" id="sec-timeline-dot"></span>
           <span>📅</span><span class="section-title">Timeline of Events</span>
@@ -743,7 +791,7 @@
         </div><!-- /section-body -->
       </div>
 
-      <div class="section" id="sec-intake">
+      <div class="section case-builder-section" id="sec-intake">
         <div class="section-header" onclick="toggleSection('sec-intake')">
           <span class="section-status" id="sec-intake-dot"></span>
           <span>🧾</span><span class="section-title">JSON Evidence Intake</span>
@@ -783,7 +831,7 @@
         </div><!-- /section-body -->
       </div>
 
-      <div class="section" id="sec-triage">
+      <div class="section case-builder-section" id="sec-triage">
         <div class="section-header" onclick="toggleSection('sec-triage')">
           <span class="section-status" id="sec-triage-dot"></span>
           <span>🔍</span><span class="section-title">Triage &amp; Analysis</span>
@@ -935,7 +983,7 @@ No prior alerts on this host in the last 30 days. The destination port 4444 is c
         </div><!-- /section-body -->
       </div>
 
-      <div class="section" id="sec-conclusion">
+      <div class="section case-builder-section" id="sec-conclusion">
         <div class="section-header" onclick="toggleSection('sec-conclusion')">
           <span class="section-status" id="sec-conclusion-dot"></span>
           <span>🏁</span><span class="section-title">Summary &amp; Conclusion</span>
@@ -1066,6 +1114,7 @@ var caseState = {
 };
 var SECTION_ORDER = ['sec-alert', 'sec-timeline', 'sec-intake', 'sec-triage', 'sec-conclusion'];
 var currentFormat = 'md';
+var activeWorkTab = 'case-builder';
 
 var TRIAGE_VERDICTS = ['Pending', 'False Positive', 'Benign True Positive', 'Suspicious', 'True Positive', 'Escalated'];
 var TRIAGE_CONFIDENCE = ['Pending', 'Low', 'Medium', 'High'];
@@ -1202,6 +1251,41 @@ function fieldLabel(f) {
   return FIELD_LABELS[f] || f.replace(/\./g,' ').replace(/_/g,' ').replace(/\b\w/g,function(c){return c.toUpperCase();});
 }
 
+function mountAnalystAidPanels() {
+  var content = document.getElementById('analyst-aid-content');
+  if (!content) return;
+  var ids = [
+    'playbook-guidance-panel',
+    'evidence-checklist-panel',
+    'known-good-checks-panel',
+    'observables-panel',
+    'pivots-panel',
+    'inv-guide-panel',
+    'rule-desc-panel',
+    'fp-panel',
+    'mitre-panel'
+  ];
+  ids.forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el && el.parentElement !== content) content.appendChild(el);
+  });
+}
+
+function setWorkTab(tabId) {
+  activeWorkTab = tabId === 'analyst-aid' ? 'analyst-aid' : 'case-builder';
+  var isCase = activeWorkTab === 'case-builder';
+  var caseBtn = document.getElementById('work-tab-btn-case');
+  var aidBtn = document.getElementById('work-tab-btn-aid');
+  var aidPane = document.getElementById('analyst-aid-tab');
+  if (caseBtn) caseBtn.classList.toggle('active', isCase);
+  if (aidBtn) aidBtn.classList.toggle('active', !isCase);
+  if (aidPane) aidPane.classList.toggle('active', !isCase);
+  document.querySelectorAll('.case-builder-section').forEach(function(el) {
+    el.style.display = isCase ? '' : 'none';
+  });
+  try { localStorage.setItem('soc_work_tab', activeWorkTab); } catch(e) {}
+}
+
 // ── INIT ─────────────────────────────────────────────────────────────────────
 (function init() {
   var now = new Date();
@@ -1209,6 +1293,7 @@ function fieldLabel(f) {
   var ms = String(now.getMilliseconds()).padStart(3,'0');
   document.getElementById('tl_time').value = now.toTimeString().slice(0,8)+'.'+ms;
   loadFromStorage();
+  mountAnalystAidPanels();
   // Initialise sections — open only Alert Data
   SECTION_ORDER.forEach(function(id) {
     var body = document.getElementById(id).querySelector('.section-body');
@@ -1225,6 +1310,7 @@ function fieldLabel(f) {
       document.body.classList.add('light');
       document.getElementById('theme-toggle').textContent = '☀️ Light';
     }
+    setWorkTab(localStorage.getItem('soc_work_tab') || 'case-builder');
     // Always default to markdown on load
     setFormat('md');
   } catch(e) {}
@@ -1249,6 +1335,7 @@ function saveToStorage() {
     localStorage.setItem('soc_parsed_events', JSON.stringify(caseState.parsedEventsBuffer));
     localStorage.setItem('soc_triage', JSON.stringify(caseState.triage));
     localStorage.setItem('soc_rule_context', JSON.stringify(caseState.ruleContext));
+    localStorage.setItem('soc_work_tab', activeWorkTab);
     localStorage.setItem('soc_links',    JSON.stringify(externalLinks));
     var selStep = document.querySelector('input[name="next-step"]:checked');
     var stepsData = {
@@ -1876,7 +1963,7 @@ function renderPlaybookGuidancePanel() {
       + escHtml((rc.mitreTechniques || []).concat(rc.mitreTactics || []).join(', ')) + '</div>';
   }
   if (hasNote) html += '<div class="field-label" style="margin-top:10px;">Embedded Playbook / Note</div><div class="triage-scroll">' + escHtml(rc.note) + '</div>';
-  else html += '<div class="triage-note" style="margin-top:8px;">No embedded playbook was found in the alert JSON. Use the checklist and pivots below to continue triage.</div>';
+  else html += '<div class="triage-note" style="margin-top:8px;">No embedded playbook found yet.</div>';
   document.getElementById('playbook-guidance-content').innerHTML = html;
 }
 
@@ -1923,7 +2010,7 @@ function renderTriageSupportPanels() {
         }).join('')
       + '</select></td>'
       + '</tr>';
-  }).join('') || '<tr><td colspan="5" class="triage-note">No observables of interest extracted yet.</td></tr>';
+  }).join('') || '<tr><td colspan="5" class="triage-note">No observables extracted yet.</td></tr>';
 
   triagePivots = buildSuggestedPivotsFromObservables(triageInterestObservables);
   document.getElementById('pivot-list').innerHTML = triagePivots.map(function(p, i) {
@@ -1932,7 +2019,7 @@ function renderTriageSupportPanels() {
       + '<div class="pivot-query">' + escHtml(p.query) + '</div>'
       + '<button class="btn" style="font-size:10px;padding:4px 10px;" onclick="copyPivotQuery(' + i + ')">Copy</button>'
       + '</div>';
-  }).join('') || '<div class="triage-note">No suggested pivots available yet.</div>';
+  }).join('') || '<div class="triage-note">Suggested pivots will appear after alert/timeline data is parsed.</div>';
 }
 
 function getCheckedTriageItems(kind) {
@@ -3869,6 +3956,11 @@ function runTriageSupportSmokeTests() {
     var mdWithAid = buildMarkdown();
     assert('opt-in markdown includes evidence section', mdWithAid.indexOf('### ✅ Evidence Reviewed') !== -1);
     assert('opt-in markdown includes suggested pivots section', mdWithAid.indexOf('### 🧪 Suggested Pivots') !== -1);
+
+    var aidContainer = document.getElementById('analyst-aid-content');
+    var playbookPanel = document.getElementById('playbook-guidance-panel');
+    var pivotsPanel = document.getElementById('pivots-panel');
+    assert('analyst aid panels mounted in analyst aid container', !!(aidContainer && playbookPanel && pivotsPanel && aidContainer.contains(playbookPanel) && aidContainer.contains(pivotsPanel)));
   } finally {
     caseState.events = backup.events;
     caseState.triage = backup.triage;
