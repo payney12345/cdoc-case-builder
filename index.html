@@ -851,7 +851,7 @@ No prior alerts on this host in the last 30 days. The destination port 4444 is c
           <div class="triage-panel-title">Triage Decision Support</div>
           <div class="triage-grid-3">
             <div>
-              <label class="field-label" style="margin-top:0;">Verdict</label>
+              <label class="field-label" style="margin-top:0;">Final Verdict</label>
               <select id="triage_verdict" onchange="onTriageFieldChange('verdict', this.value)"></select>
             </div>
             <div>
@@ -875,6 +875,7 @@ No prior alerts on this host in the last 30 days. The destination port 4444 is c
           </div>
           <label class="field-label">Analyst Rationale</label>
           <textarea id="triage_analystRationale" rows="3" placeholder="Analyst rationale and decision notes..." oninput="onTriageFieldChange('analystRationale', this.value)"></textarea>
+          <div id="triage-decision-warnings" class="triage-note" style="display:none;margin-top:8px;color:var(--yellow);background:rgba(210,153,34,0.08);border:1px solid rgba(210,153,34,0.35);border-radius:5px;padding:8px 10px;"></div>
           <label class="check-item" style="margin-top:8px;">
             <input type="checkbox" id="triage_includeAnalystAid" onchange="onTriageBooleanFieldChange('includeAnalystAidSections', this.checked)">
             <span class="check-box"></span>
@@ -1113,6 +1114,7 @@ var caseState = {
     knownGoodChecks: {},
     observableDispositions: {}
   },
+  lastAutoTitle: '',
   ruleContext: getDefaultRuleContext()
 };
 var SECTION_ORDER = ['sec-alert', 'sec-timeline', 'sec-triage', 'sec-conclusion'];
@@ -1254,6 +1256,153 @@ function fieldLabel(f) {
   return FIELD_LABELS[f] || f.replace(/\./g,' ').replace(/_/g,' ').replace(/\b\w/g,function(c){return c.toUpperCase();});
 }
 
+function formatTitleDate(ts) {
+  if (!ts) return '';
+  var d = new Date(ts);
+  if (isNaN(d.getTime())) {
+    var m = String(ts).match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (m) return m[1] + m[2] + m[3];
+    return '';
+  }
+  var yyyy = d.getUTCFullYear();
+  var mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+  var dd = String(d.getUTCDate()).padStart(2, '0');
+  return String(yyyy) + mm + dd;
+}
+
+function firstNonEmpty(values) {
+  for (var i = 0; i < values.length; i++) {
+    var v = String(values[i] || '').trim();
+    if (v) return v;
+  }
+  return '';
+}
+
+function buildLiteEventFromRaw(rawMerged) {
+  if (!rawMerged) return null;
+  return {
+    timestamp: firstValue(rawMerged, ['kibana.alert.original_time', 'signal.original_time', '@timestamp', 'event.created', 'event.ingested']),
+    ruleName: firstValue(rawMerged, ['kibana.alert.rule.name', 'signal.rule.name', 'rule.name']),
+    host: firstValue(rawMerged, ['host.name', 'host.hostname', 'source.enrichment.machine_name']),
+    machineName: firstValue(rawMerged, ['source.enrichment.machine_name']),
+    siteName: firstValue(rawMerged, ['source.enrichment.site_name_and_system']),
+    user: firstValue(rawMerged, ['user.name', 'user.name.text', 'hashicorp_vault.audit.auth.display_name', 'winlog.event_data.TargetUserName', 'winlog.event_data.SubjectUserName']),
+    url: firstValue(rawMerged, ['url.original', 'url.full']),
+    domain: firstValue(rawMerged, ['url.domain']),
+    destinationBytes: firstValue(rawMerged, ['destination.bytes']),
+    sourcePort: firstValue(rawMerged, ['source.port', 'hashicorp_vault.audit.request.remote_port']),
+    destinationPort: firstValue(rawMerged, ['destination.port']),
+    sourceIp: firstValue(rawMerged, ['source.ip', 'hashicorp_vault.audit.request.remote_address', 'client.ip']),
+    relatedHosts: firstValuesArray(rawMerged, ['related.hosts', 'host.hostname', 'host.name']),
+    vaultOperation: firstValue(rawMerged, ['hashicorp_vault.audit.request.operation']),
+    vaultMountPoint: firstValue(rawMerged, ['hashicorp_vault.audit.request.mount_point', 'hashicorp_vault.audit.request.mount_type']),
+    vaultRequestUri: firstValue(rawMerged, ['hashicorp_vault.audit.request.request_uri']),
+    vaultTokenType: firstValue(rawMerged, ['hashicorp_vault.audit.auth.token_type'])
+  };
+}
+
+function isDefaultLikeTitle(title) {
+  var t = String(title || '').trim();
+  if (!t) return true;
+  if (t === 'Security Incident') return true;
+  if (/^Incident\s+[\-—]\s+\d{4}-\d{2}-\d{2}$/.test(t)) return true;
+  return false;
+}
+
+function buildSuggestedReportTitle() {
+  var rawEv = getRawAlertEvent();
+  var all = caseState.events.slice();
+  var rawLite = buildLiteEventFromRaw(rawEv);
+  if (rawLite) all.push(rawLite);
+  var seed = all.length ? all[0] : null;
+  var parsed = parseJsonSafe(document.getElementById('raw_input').value || '');
+  var rawMerged = parsed && typeof parsed === 'object' ? unwrapEventDocument(parsed) : null;
+
+  var ts = firstNonEmpty([
+    rawMerged ? firstValue(rawMerged, ['kibana.alert.original_time', 'signal.original_time', '@timestamp', 'event.created', 'event.ingested']) : '',
+    seed ? seed.timestamp : ''
+  ]);
+  var rule = firstNonEmpty([
+    rawMerged ? firstValue(rawMerged, ['kibana.alert.rule.name', 'signal.rule.name', 'rule.name']) : '',
+    caseState.ruleContext.name,
+    seed ? seed.ruleName : ''
+  ]);
+  var host = firstNonEmpty([
+    rawMerged ? firstValue(rawMerged, ['host.name', 'host.hostname', 'source.enrichment.machine_name']) : '',
+    seed ? (seed.host || seed.machineName) : '',
+    seed && seed.relatedHosts && seed.relatedHosts.length ? seed.relatedHosts[0] : ''
+  ]);
+  var unit = firstNonEmpty([
+    rawMerged ? firstValue(rawMerged, ['source.enrichment.site_name_and_system']) : '',
+    seed ? seed.siteName : ''
+  ]);
+  var user = firstNonEmpty([
+    rawMerged ? firstValue(rawMerged, ['user.name', 'user.name.text', 'hashicorp_vault.audit.auth.display_name', 'winlog.event_data.TargetUserName', 'winlog.event_data.SubjectUserName']) : '',
+    seed ? seed.user : ''
+  ]);
+  var urlCandidate = firstNonEmpty([
+    rawMerged ? firstValue(rawMerged, ['url.original', 'url.full', 'url.domain']) : '',
+    seed ? (seed.url || seed.domain) : ''
+  ]);
+
+  var parts = [];
+  var datePart = formatTitleDate(ts);
+  if (datePart) parts.push(datePart);
+  if (rule) parts.push(rule);
+  if (host) parts.push(host);
+  if (unit) parts.push(unit);
+  if (user) parts.push(user);
+
+  if (urlCandidate) {
+    var urlPart = /^https?:\/\//i.test(urlCandidate) ? defangUrl(urlCandidate) : defangIfNeeded(urlCandidate, 'url.domain');
+    if (urlPart) parts.push(urlPart);
+  }
+
+  parts = parts.filter(function(p){ return String(p || '').trim() !== ''; });
+  return parts.length ? parts.join(' - ') : 'Security Incident';
+}
+
+function applyAutoReportTitle(force) {
+  var titleEl = document.getElementById('report_title');
+  if (!titleEl) return;
+  var current = String(titleEl.value || '').trim();
+  var next = buildSuggestedReportTitle();
+  if (!next) return;
+
+  var canReplace = force
+    || !current
+    || isDefaultLikeTitle(current)
+    || (caseState.lastAutoTitle && current === caseState.lastAutoTitle)
+    || !titleEl._userEdited;
+
+  if (!canReplace) return;
+  titleEl.value = next;
+  caseState.lastAutoTitle = next;
+}
+
+function renderTriageDecisionWarnings() {
+  ensureTriageState();
+  var box = document.getElementById('triage-decision-warnings');
+  if (!box) return;
+  var t = caseState.triage || {};
+  var verdict = t.verdict || 'Pending';
+  if (verdict === 'Pending') {
+    box.style.display = 'none';
+    box.innerHTML = '';
+    return;
+  }
+  var notes = [];
+  if ((t.recommendedAction || 'Pending') === 'Pending') notes.push('Recommended action is still Pending while a final verdict has been selected.');
+  if ((t.confidence || 'Pending') === 'Pending') notes.push('Confidence is still Pending while a final verdict has been selected.');
+  if (!notes.length) {
+    box.style.display = 'none';
+    box.innerHTML = '';
+    return;
+  }
+  box.style.display = 'block';
+  box.innerHTML = notes.map(function(n){ return '<div>' + escHtml(n) + '</div>'; }).join('');
+}
+
 function mountAnalystAidPanels() {
   var content = document.getElementById('analyst-aid-content');
   if (!content) return;
@@ -1330,6 +1479,7 @@ function saveToStorage() {
     localStorage.setItem('soc_summary',  document.getElementById('summary').value);
     localStorage.setItem('soc_act',      document.getElementById('act_type').value);
     localStorage.setItem('soc_title',    document.getElementById('report_title').value);
+    localStorage.setItem('soc_last_auto_title', caseState.lastAutoTitle || '');
     localStorage.setItem('soc_custom',   JSON.stringify(customFields));
     localStorage.setItem('soc_title_edited', document.getElementById('report_title')._userEdited ? '1' : '');
     localStorage.setItem('soc_verdict',  document.querySelector('input[name="verdict"]:checked').value);
@@ -1369,6 +1519,7 @@ function loadFromStorage() {
     renderCustomFields();
     var savedTitle = localStorage.getItem('soc_title');
     if (savedTitle) { var te = document.getElementById('report_title'); te.value = savedTitle; te._userEdited = localStorage.getItem('soc_title_edited') === '1'; }
+    caseState.lastAutoTitle = localStorage.getItem('soc_last_auto_title') || '';
     var verdict = localStorage.getItem('soc_verdict');
     if (verdict) { var r = document.querySelector('input[name="verdict"][value="'+verdict+'"]'); if(r) r.checked = true; }
     else document.getElementById('v-pending').checked = true;
@@ -1403,12 +1554,7 @@ function loadFromStorage() {
       renderFpPanel(raw);
       renderRuleDescPanel(raw);
     }
-    // Auto-populate title if not already set by user
-    var titleEl = document.getElementById('report_title');
-    var ruleName = extractField(raw, 'kibana.alert.rule.name');
-    var ts = extractField(raw, '@timestamp');
-    var autoTitle = ruleName || (ts ? 'Incident — '+ts.split('T')[0] : 'Security Incident');
-    if (!titleEl._userEdited && raw) titleEl.value = autoTitle;
+    if (raw) applyAutoReportTitle(false);
   } catch(e) {}
 }
 
@@ -1992,6 +2138,7 @@ function renderTriageSupportPanels() {
   var includeAidEl = document.getElementById('triage_includeAnalystAid');
   if (includeAidEl) includeAidEl.checked = !!caseState.triage.includeAnalystAidSections;
   syncVerdictRadioFromTriage();
+  renderTriageDecisionWarnings();
 
   renderChecklistPanel('evidence-checklist-list', getEvidenceChecklistItems(), 'evidence');
   renderChecklistPanel('known-good-checks-list', getKnownGoodCheckItems(), 'known');
@@ -2440,6 +2587,7 @@ function resetAllSilent() {
   caseState.events = [];
   caseState.parsedEventsBuffer = [];
   caseState.triage = getDefaultTriageState();
+  caseState.lastAutoTitle = '';
   resetRuleContext();
   ['raw_input','json_intake_input','impact','tl_desc','link_title','link_url','analysis','summary','report_title','escalate-detail','tune-detail'].forEach(function(id){
     var el = document.getElementById(id); if (el) el.value = '';
@@ -2519,14 +2667,10 @@ function onRawChange() {
     renderMitrePanel(raw);
     renderFpPanel(raw);
     renderRuleDescPanel(raw);
-    // Auto-populate title if not already set by user
-    var titleEl = document.getElementById('report_title');
-    var ruleName = extractField(raw, 'kibana.alert.rule.name');
-    var ts = extractField(raw, '@timestamp');
-    var autoTitle = ruleName || (ts ? 'Incident — '+ts.split('T')[0] : 'Security Incident');
-    if (!titleEl._userEdited) titleEl.value = autoTitle;
+    applyAutoReportTitle(false);
   } else {
     resetRuleContext();
+    caseState.lastAutoTitle = '';
     customFields = [];
   renderCustomFields();
   document.getElementById('mitre-panel').style.display = 'none';
@@ -2902,7 +3046,8 @@ function buildReportGroupedData() {
   var observables = getReportObservables();
   var rawEv = getRawAlertEvent();
   var all = caseState.events.slice();
-  if (rawEv) all.push(normalizeJsonEvent(rawEv));
+  var rawLite = buildLiteEventFromRaw(rawEv);
+  if (rawLite) all.push(rawLite);
 
   var dispMap = {};
   observables.forEach(function(o) {
@@ -3167,8 +3312,7 @@ function buildMarkdownTriageSections() {
   var pivots = includeAid ? getReportPivots() : [];
   var rc = caseState.ruleContext || {};
 
-  md.push('', '### 🧭 Triage Decision');
-  md.push('- **Verdict:** ' + (caseState.triage.verdict || 'Pending'));
+  md.push('', '### 🧭 Triage Assessment');
   md.push('- **Confidence:** ' + (caseState.triage.confidence || 'Pending'));
   md.push('- **Recommended Action:** ' + (caseState.triage.recommendedAction || 'Pending'));
   md.push('- **Escalation Required:** ' + (caseState.triage.escalationRequired || 'Pending'));
@@ -3205,8 +3349,7 @@ function buildJiraTriageSections() {
   var rc = caseState.ruleContext || {};
 
   j.push('');
-  j.push('h3. 🧭 Triage Decision');
-  j.push('*Verdict:* ' + (caseState.triage.verdict || 'Pending'));
+  j.push('h3. 🧭 Triage Assessment');
   j.push('*Confidence:* ' + (caseState.triage.confidence || 'Pending'));
   j.push('*Recommended Action:* ' + (caseState.triage.recommendedAction || 'Pending'));
   j.push('*Escalation Required:* ' + (caseState.triage.escalationRequired || 'Pending'));
@@ -3253,7 +3396,7 @@ function buildMarkdown() {
   if (stepValMd === 'escalate') stepLabel = 'Incident escalation required' + (escalateDetailMd ? ' — ' + escalateDetailMd : '');
   if (stepValMd === 'tune')     stepLabel = 'Suppress alert / Tune rule'   + (tuneDetailMd     ? ' — ' + tuneDetailMd     : '');
   if (stepValMd === 'close')    stepLabel = 'Close case';
-  var reportTitle = document.getElementById('report_title').value.trim() || extractField(raw, 'kibana.alert.rule.name') || 'Security Incident';
+  var reportTitle = document.getElementById('report_title').value.trim() || buildSuggestedReportTitle();
 
   var md = ['### 🛡️ '+reportTitle, '', '---', '', '### 📋 Key Information', '', '| Field | Value |', '| :--- | :--- |'];
   var hasF = false;
@@ -3352,7 +3495,7 @@ function buildJira() {
   if (stepValJ === 'escalate') stepLabel2 = 'Incident escalation required' + (escalateDetailJ ? ' — ' + escalateDetailJ : '');
   if (stepValJ === 'tune')     stepLabel2 = 'Suppress alert / Tune rule'   + (tuneDetailJ     ? ' — ' + tuneDetailJ     : '');
   if (stepValJ === 'close')    stepLabel2 = 'Close case';
-  var reportTitle = document.getElementById('report_title').value.trim() || extractField(raw, 'kibana.alert.rule.name') || 'Security Incident';
+  var reportTitle = document.getElementById('report_title').value.trim() || buildSuggestedReportTitle();
   var vcIcon   = {
     'Pending':'(!)',
     'False Positive':'(/)',
@@ -3958,6 +4101,7 @@ function resetKeepJson() {
   caseState.events = [];
   caseState.parsedEventsBuffer = [];
   caseState.triage = getDefaultTriageState();
+  caseState.lastAutoTitle = '';
   resetRuleContext();
   document.getElementById('json_intake_input').value = '';
   ['impact','tl_desc','link_title','link_url','analysis','summary','report_title','escalate-detail','tune-detail'].forEach(function(id){
@@ -4006,6 +4150,7 @@ function resetAll() {
   caseState.events = [];
   caseState.parsedEventsBuffer = [];
   caseState.triage = getDefaultTriageState();
+  caseState.lastAutoTitle = '';
   resetRuleContext();
   ['raw_input','json_intake_input','impact','tl_desc','link_title','link_url','analysis','summary','report_title','escalate-detail','tune-detail'].forEach(function(id){
     document.getElementById(id).value = '';
@@ -4132,7 +4277,10 @@ function runTriageSupportSmokeTests() {
     events: JSON.parse(JSON.stringify(caseState.events || [])),
     triage: JSON.parse(JSON.stringify(caseState.triage || getDefaultTriageState())),
     ruleContext: JSON.parse(JSON.stringify(caseState.ruleContext || {})),
-    raw: document.getElementById('raw_input').value
+    raw: document.getElementById('raw_input').value,
+    reportTitle: document.getElementById('report_title').value,
+    titleEdited: !!document.getElementById('report_title')._userEdited,
+    lastAutoTitle: caseState.lastAutoTitle || ''
   };
 
   try {
@@ -4212,12 +4360,17 @@ function runTriageSupportSmokeTests() {
 
     caseState.triage.includeAnalystAidSections = false;
     var mdDefault = buildMarkdown();
+    var jiraDefault = buildJira();
     assert('default markdown excludes evidence section', mdDefault.indexOf('### ✅ Evidence Reviewed') === -1);
     assert('default markdown excludes suggested pivots section', mdDefault.indexOf('### 🧪 Suggested Pivots') === -1);
     assert('default markdown includes compact entities section', mdDefault.indexOf('### 🧩 Case Entities / Observables') !== -1);
     assert('default markdown uses grouped case context section', mdDefault.indexOf('#### Case Context') !== -1);
     assert('default markdown uses grouped web activity section', mdDefault.indexOf('#### Web / HTTP Activity') !== -1);
     assert('default markdown no longer uses flat entities table', mdDefault.indexOf('| Type | Value | Source | Notes |') === -1);
+    assert('markdown triage section renamed to assessment', mdDefault.indexOf('### 🧭 Triage Assessment') !== -1 && mdDefault.indexOf('### 🧭 Triage Decision') === -1);
+    assert('markdown verdict appears only in conclusion', (mdDefault.match(/\*\*Verdict:\*\*/g) || []).length === 1);
+    assert('jira triage section renamed to assessment', jiraDefault.indexOf('h3. 🧭 Triage Assessment') !== -1 && jiraDefault.indexOf('h3. 🧭 Triage Decision') === -1);
+    assert('jira verdict appears only in conclusion', (jiraDefault.match(/\*Verdict:\*/g) || []).length === 1);
 
     caseState.triage.includeAnalystAidSections = true;
     var mdWithAid = buildMarkdown();
@@ -4228,11 +4381,68 @@ function runTriageSupportSmokeTests() {
     var playbookPanel = document.getElementById('playbook-guidance-panel');
     var pivotsPanel = document.getElementById('pivots-panel');
     assert('analyst aid panels mounted in analyst aid container', !!(aidContainer && playbookPanel && pivotsPanel && aidContainer.contains(playbookPanel) && aidContainer.contains(pivotsPanel)));
+
+    var titleEl = document.getElementById('report_title');
+    titleEl.value = '';
+    titleEl._userEdited = false;
+    caseState.lastAutoTitle = '';
+    document.getElementById('raw_input').value = JSON.stringify({ fields: {
+      '@timestamp': ['2026-05-30T10:12:06.000Z'],
+      'kibana.alert.rule.name': ['Large File Download'],
+      'host.name': ['RUDBU620055'],
+      'source.enrichment.site_name_and_system': ['RFA Tidespring'],
+      'user.name': ['mitchellt110'],
+      'url.original': ['https://www.aidu.mod.uk/Milflip/img/vids/My-Products-Large.mp4']
+    }});
+    onRawChange();
+    var webTitle = titleEl.value;
+    assert('web title format includes yyyymmdd-rule-host-unit-user-url', webTitle === '20260530 - Large File Download - RUDBU620055 - RFA Tidespring - mitchellt110 - hxxps://www[.]aidu[.]mod[.]uk/Milflip/img/vids/My-Products-Large[.]mp4');
+
+    titleEl.value = '';
+    titleEl._userEdited = false;
+    caseState.lastAutoTitle = '';
+    document.getElementById('raw_input').value = JSON.stringify({ fields: {
+      '@timestamp': ['2026-03-05T09:00:00.000Z'],
+      'kibana.alert.rule.name': ['NDH UC012 - Credentials from Hashicorp Vault'],
+      'host.name': ['ndhmgtrcvlt07'],
+      'user.name': ['kubernetes-prod-app'],
+      'hashicorp_vault.audit.request.operation': ['read']
+    }});
+    onRawChange();
+    var vaultTitle = titleEl.value;
+    assert('vault title omits url when absent', vaultTitle === '20260305 - NDH UC012 - Credentials from Hashicorp Vault - ndhmgtrcvlt07 - kubernetes-prod-app');
+
+    titleEl.value = '';
+    titleEl._userEdited = false;
+    caseState.lastAutoTitle = '';
+    document.getElementById('raw_input').value = JSON.stringify({ fields: {
+      '@timestamp': ['2026-06-01T11:00:00.000Z'],
+      'kibana.alert.rule.name': ['Suspicious Encoded PowerShell With Network Connection'],
+      'host.name': ['FINANCE-LAPTOP-07'],
+      'user.name': ['a.wilson'],
+      'url.original': ['https://example-malware-test.com/payload.ps1']
+    }});
+    onRawChange();
+    var psTitle = titleEl.value;
+    assert('powershell title includes defanged url', psTitle === '20260601 - Suspicious Encoded PowerShell With Network Connection - FINANCE-LAPTOP-07 - a.wilson - hxxps://example-malware-test[.]com/payload[.]ps1');
+
+    var manualTitle = 'Manual SOC title override';
+    titleEl.value = manualTitle;
+    titleEl._userEdited = true;
+    document.getElementById('json_intake_input').value = '{"@timestamp":"2026-06-01T11:05:00.000Z","event.category":"web"}';
+    parseEvidenceIntake();
+    assert('manual title is not overwritten by evidence intake parsing', titleEl.value === manualTitle);
+
+    resetAllSilent();
+    assert('reset clears last auto title marker', !caseState.lastAutoTitle);
   } finally {
     caseState.events = backup.events;
     caseState.triage = backup.triage;
     caseState.ruleContext = backup.ruleContext;
+    caseState.lastAutoTitle = backup.lastAutoTitle;
     document.getElementById('raw_input').value = backup.raw;
+    document.getElementById('report_title').value = backup.reportTitle;
+    document.getElementById('report_title')._userEdited = backup.titleEdited;
     renderTriageSupportPanels();
   }
 
