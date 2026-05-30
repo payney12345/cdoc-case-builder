@@ -1903,7 +1903,7 @@ function buildCaseEntitiesAndObservables() {
   return { entities: entities, observables: observables };
 }
 
-function buildSuggestedPivotsFromObservables(observables) {
+function buildSuggestedPivotsFromObservables(observables, entities) {
   var pivots = [];
   var seen = {};
   function addPivot(name, query) {
@@ -1929,6 +1929,10 @@ function buildSuggestedPivotsFromObservables(observables) {
     if (o.type === 'Process') addPivot('Process Pivot', 'process.name:"' + rawVal + '" OR process.executable:*"' + rawVal + '"*');
     if (o.type === 'Vault Operation') addPivot('Vault Operation Pivot', 'hashicorp_vault.audit.request.operation:"' + rawVal + '"');
     if (o.type === 'MITRE Technique' && /^T\d+/i.test(rawVal)) addPivot('MITRE Technique Pivot', 'kibana.alert.rule.threat.technique.id:"' + rawVal + '"');
+  });
+  (entities || []).forEach(function(e) {
+    var rawVal = String(e.value || '').replace(/\[\.\]/g, '.');
+    if (e.type === 'Vault Operation') addPivot('Vault Operation Pivot', 'hashicorp_vault.audit.request.operation:"' + rawVal + '"');
   });
   addPivot('Vault Request Type Pivot', 'hashicorp_vault.audit.type:"request"');
   addPivot('Vault Success Auth Pivot', 'event.category:"authentication" AND event.outcome:"success"');
@@ -2012,7 +2016,7 @@ function renderTriageSupportPanels() {
       + '</tr>';
   }).join('') || '<tr><td colspan="5" class="triage-note">No observables extracted yet.</td></tr>';
 
-  triagePivots = buildSuggestedPivotsFromObservables(triageInterestObservables);
+  triagePivots = buildSuggestedPivotsFromObservables(triageInterestObservables, triageCaseEntities);
   document.getElementById('pivot-list').innerHTML = triagePivots.map(function(p, i) {
     return '<div class="pivot-row">'
       + '<div class="triage-note" style="margin:0;">' + escHtml(p.name) + '</div>'
@@ -2874,7 +2878,7 @@ function getReportCaseEntities() {
 }
 
 function getReportPivots() {
-  return triagePivots && triagePivots.length ? triagePivots : buildSuggestedPivotsFromObservables(getReportObservables());
+  return triagePivots && triagePivots.length ? triagePivots : buildSuggestedPivotsFromObservables(getReportObservables(), getReportCaseEntities());
 }
 
 function shouldIncludeAnalystAidInReport() {
@@ -3921,7 +3925,7 @@ function runTriageSupportSmokeTests() {
     caseState.events = [
       normalizeJsonEvent({ fields: { '@timestamp':['2026-05-30T10:00:00Z'], 'user.name':['mitchellt110'], 'source.ip':['25.235.94.26'], 'destination.ip':['203.0.113.20'], 'url.original':['https://www.aidu.mod.uk/files/My-Products-Large.mp4'], 'url.domain':['www.aidu.mod.uk'], 'event.category':['web'] } }),
       normalizeJsonEvent({ fields: { '@timestamp':['2026-05-30T10:01:00Z'], 'user.name':['mitchellt110'], 'source.ip':['25.235.94.26'], 'destination.ip':['203.0.113.20'], 'url.original':['https://www.aidu.mod.uk/files/My-Products-Large.mp4'], 'url.domain':['www.aidu.mod.uk'], 'event.category':['web'] } }),
-      normalizeJsonEvent({ fields: { '@timestamp':['2026-05-30T10:02:00Z'], 'hashicorp_vault.audit.request.remote_address':['100.64.96.3'], 'hashicorp_vault.audit.request.operation':['read'], 'event.category':['authentication'] } })
+      normalizeJsonEvent({ fields: { '@timestamp':['2026-05-30T10:02:00Z'], 'hashicorp_vault.audit.request.remote_address':['100.64.96.3'], 'hashicorp_vault.audit.request.operation':['read'], 'hashicorp_vault.audit.request.mount_point':['secret/data/prod'], 'hashicorp_vault.audit.request.request_uri':['/v1/secret/data/prod/db'], 'event.category':['authentication'] } })
     ];
 
     var triageData = buildCaseEntitiesAndObservables();
@@ -3931,20 +3935,26 @@ function runTriageSupportSmokeTests() {
     var hasDst = obs.some(function(o){ return o.type === 'Destination IP' && o.value.indexOf('203[.]0[.]113[.]20') !== -1; });
     var hasUrlOrDomain = obs.some(function(o){ return o.type === 'URL' || o.type === 'Domain'; });
     var hasVaultRemote = obs.some(function(o){ return o.type === 'Source IP' && o.value.indexOf('100[.]64[.]96[.]3') !== -1; });
-    var hasVaultOp = obs.some(function(o){ return o.type === 'Vault Operation' && /read/i.test(o.value); });
+    var hasVaultMount = obs.some(function(o){ return o.type === 'Vault Mount Point' && /secret\/data\/prod/i.test(o.value); });
+    var hasVaultReqUri = obs.some(function(o){ return o.type === 'Vault Request URI' && /\/v1\/secret\/data\/prod\/db/i.test(o.value); });
+    var hasVaultOpEntity = entities.some(function(e){ return e.type === 'Vault Operation' && /read/i.test(e.value); });
     var hasEntityUser = entities.some(function(e){ return e.type === 'User'; });
     var entityHasDisposition = entities.some(function(e){ return e.disposition != null; });
     assert('observables deduped', obs.length < 20);
     assert('web observables include source/destination/url-domain', hasSrc && hasDst && hasUrlOrDomain);
-    assert('vault observables include remote ip and operation', hasVaultRemote && hasVaultOp);
+    assert('vault observables include remote ip', hasVaultRemote);
+    assert('vault operation captured as factual entity', hasVaultOpEntity);
+    assert('vault mount/request uri captured as observables', hasVaultMount && hasVaultReqUri);
     assert('factual entities extracted', hasEntityUser);
     assert('factual entities do not require disposition', !entityHasDisposition);
 
-    var pivots = buildSuggestedPivotsFromObservables(obs);
+    var pivots = buildSuggestedPivotsFromObservables(obs, entities);
     var hasSourcePivot = pivots.some(function(p){ return /source\.ip/i.test(p.query); });
     var hasDomainPivot = pivots.some(function(p){ return /url\.original|url\.domain|dns\.question\.name/i.test(p.query); });
+    var hasVaultOperationPivot = pivots.some(function(p){ return /hashicorp_vault\.audit\.request\.operation/i.test(p.query) && /read/i.test(p.query); });
     assert('pivot generation includes source ip pivot', hasSourcePivot);
     assert('pivot generation includes domain/url pivot', hasDomainPivot);
+    assert('pivot generation includes vault operation pivot', hasVaultOperationPivot);
 
     caseState.triage.includeAnalystAidSections = false;
     var mdDefault = buildMarkdown();
