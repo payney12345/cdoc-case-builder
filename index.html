@@ -302,6 +302,68 @@
   .tl-desc { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .tl-alert { color: var(--yellow); font-weight: 600; }
 
+  /* ── JSON EVIDENCE INTAKE ── */
+  #intake-summary {
+    margin-top: 8px;
+    font-size: 11px;
+    color: var(--text2);
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    line-height: 1.6;
+  }
+  #intake-summary.warn {
+    background: rgba(210,153,34,0.08);
+    border-color: rgba(210,153,34,0.35);
+    color: var(--yellow);
+  }
+  #intake-events-wrap {
+    margin-top: 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+    background: var(--bg3);
+  }
+  #intake-events-wrap table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
+    table-layout: fixed;
+  }
+  #intake-events-wrap th {
+    font-family: var(--mono); font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.05em;
+    background: var(--bg4); color: var(--text2);
+    padding: 6px 8px; border: 1px solid var(--border); text-align: left;
+  }
+  #intake-events-wrap td {
+    padding: 5px 8px;
+    border: 1px solid var(--border);
+    color: var(--text);
+    vertical-align: top;
+    word-break: break-word;
+  }
+  #intake-events-wrap tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
+  .intake-cell-time { white-space: nowrap; color: var(--cyan); font-family: var(--mono); }
+  .intake-cell-mono { font-family: var(--mono); }
+  .intake-actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+  .raw-json-view {
+    display: none;
+    margin-top: 6px;
+    background: var(--bg4);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 8px;
+    max-height: 180px;
+    overflow: auto;
+    white-space: pre-wrap;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--text2);
+    font-family: var(--mono);
+  }
+
   /* ── LINKS ── */
   #links-list { margin-top: 8px; }
   .link-entry {
@@ -632,6 +694,46 @@
         </div><!-- /section-body -->
       </div>
 
+      <div class="section" id="sec-intake">
+        <div class="section-header" onclick="toggleSection('sec-intake')">
+          <span class="section-status" id="sec-intake-dot"></span>
+          <span>🧾</span><span class="section-title">JSON Evidence Intake</span>
+          <button class="section-complete-btn" onclick="event.stopPropagation();setSectionComplete('sec-intake', !document.getElementById('sec-intake').classList.contains('complete'))">Mark done</button>
+          <span class="section-chevron">▼</span>
+        </div>
+        <div class="section-body">
+          <div class="info">💡 Paste one or more Kibana/log JSON events to build the investigation timeline.</div>
+          <textarea id="json_intake_input" rows="8" placeholder="Paste one JSON object, a JSON array, or newline-separated JSON objects..." oninput="saveToStorage()"></textarea>
+          <div class="intake-actions">
+            <button class="btn" onclick="parseEvidenceIntake()">Parse Events</button>
+            <button class="btn" onclick="addSelectedParsedEventsToTimeline()">Add Selected to Timeline</button>
+            <button class="btn btn-danger" onclick="clearEvidenceIntake()">Clear Intake</button>
+          </div>
+          <div id="intake-summary" style="display:none;"></div>
+          <div id="intake-events-wrap" style="display:none;">
+            <div style="overflow:auto;max-height:280px;">
+              <table>
+                <thead>
+                  <tr>
+                    <th style="width:70px;">Include</th>
+                    <th style="width:170px;">Time</th>
+                    <th style="width:120px;">Category</th>
+                    <th style="width:120px;">Host</th>
+                    <th style="width:110px;">User</th>
+                    <th style="width:120px;">Source IP</th>
+                    <th style="width:120px;">Destination IP</th>
+                    <th style="width:140px;">Action</th>
+                    <th>Suggested Summary</th>
+                    <th style="width:80px;">Raw</th>
+                  </tr>
+                </thead>
+                <tbody id="intake-events-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div><!-- /section-body -->
+      </div>
+
       <div class="section" id="sec-triage">
         <div class="section-header" onclick="toggleSection('sec-triage')">
           <span class="section-status" id="sec-triage-dot"></span>
@@ -793,7 +895,12 @@ No prior alerts on this host in the last 30 days. The destination port 4444 is c
 var timelineData = [];
 var externalLinks = [];
 var customFields  = [];
-var SECTION_ORDER = ['sec-alert', 'sec-timeline', 'sec-triage', 'sec-conclusion'];
+// caseState keeps multi-event timeline intake data isolated from legacy fields.
+var caseState = {
+  events: [],
+  parsedEventsBuffer: []
+};
+var SECTION_ORDER = ['sec-alert', 'sec-timeline', 'sec-intake', 'sec-triage', 'sec-conclusion'];
 var currentFormat = 'md';
 
 var FIELDS = [
@@ -948,6 +1055,7 @@ function fieldLabel(f) {
 function saveToStorage() {
   try {
     localStorage.setItem('soc_raw',      document.getElementById('raw_input').value);
+    localStorage.setItem('soc_intake_raw', document.getElementById('json_intake_input').value);
     localStorage.setItem('soc_impact',   document.getElementById('impact').value);
     localStorage.setItem('soc_analysis', document.getElementById('analysis').value);
     localStorage.setItem('soc_summary',  document.getElementById('summary').value);
@@ -957,6 +1065,8 @@ function saveToStorage() {
     localStorage.setItem('soc_title_edited', document.getElementById('report_title')._userEdited ? '1' : '');
     localStorage.setItem('soc_verdict',  document.querySelector('input[name="verdict"]:checked').value);
     localStorage.setItem('soc_timeline', JSON.stringify(timelineData));
+    localStorage.setItem('soc_case_events', JSON.stringify(caseState.events));
+    localStorage.setItem('soc_parsed_events', JSON.stringify(caseState.parsedEventsBuffer));
     localStorage.setItem('soc_links',    JSON.stringify(externalLinks));
     var selStep = document.querySelector('input[name="next-step"]:checked');
     var stepsData = {
@@ -970,9 +1080,9 @@ function saveToStorage() {
 
 function loadFromStorage() {
   try {
-    var raw = localStorage.getItem('soc_raw');
-    if (!raw) return;
+    var raw = localStorage.getItem('soc_raw') || '';
     document.getElementById('raw_input').value  = raw;
+    document.getElementById('json_intake_input').value = localStorage.getItem('soc_intake_raw') || '';
     document.getElementById('impact').value     = localStorage.getItem('soc_impact')   || '';
     document.getElementById('analysis').value   = localStorage.getItem('soc_analysis') || '';
     document.getElementById('summary').value    = localStorage.getItem('soc_summary')  || '';
@@ -990,6 +1100,8 @@ function loadFromStorage() {
     var verdict = localStorage.getItem('soc_verdict');
     if (verdict) { var r = document.querySelector('input[name="verdict"][value="'+verdict+'"]'); if(r) r.checked = true; }
     var tl = localStorage.getItem('soc_timeline'); if (tl) timelineData = JSON.parse(tl);
+    var ce = localStorage.getItem('soc_case_events'); if (ce) caseState.events = JSON.parse(ce);
+    var pe = localStorage.getItem('soc_parsed_events'); if (pe) caseState.parsedEventsBuffer = JSON.parse(pe);
     var lk = localStorage.getItem('soc_links');    if (lk) externalLinks = JSON.parse(lk);
     var stepsRaw = localStorage.getItem('soc_steps');
     if (stepsRaw) {
@@ -1005,16 +1117,21 @@ function loadFromStorage() {
         if (sd.tuneDetail)     document.getElementById('tune-detail').value = sd.tuneDetail;
       } catch(e) {}
     }
-    renderTimeline(); renderLinks(); updatePreview();
-    renderMitrePanel(raw);
-    renderFpPanel(raw);
-    renderRuleDescPanel(raw);
+    renderTimeline();
+    renderParsedEventsReview();
+    renderLinks();
+    updatePreview();
+    if (raw) {
+      renderMitrePanel(raw);
+      renderFpPanel(raw);
+      renderRuleDescPanel(raw);
+    }
     // Auto-populate title if not already set by user
     var titleEl = document.getElementById('report_title');
     var ruleName = extractField(raw, 'kibana.alert.rule.name');
     var ts = extractField(raw, '@timestamp');
     var autoTitle = ruleName || (ts ? 'Incident — '+ts.split('T')[0] : 'Security Incident');
-    if (!titleEl._userEdited) titleEl.value = autoTitle;
+    if (!titleEl._userEdited && raw) titleEl.value = autoTitle;
   } catch(e) {}
 }
 
@@ -1060,12 +1177,368 @@ function extractField(json, field) {
   } catch(e) { return ''; }
 }
 
+// ── MULTI-JSON INTAKE ───────────────────────────────────────────────────────
+var eventIdCounter = 0;
+
+function makeEventId() {
+  eventIdCounter += 1;
+  return 'evt_' + Date.now() + '_' + eventIdCounter;
+}
+
+function getPathValue(obj, path) {
+  if (!obj || typeof obj !== 'object') return '';
+  if (Object.prototype.hasOwnProperty.call(obj, path) && obj[path] != null) return obj[path];
+  var parts = path.split('.');
+  var cur = obj;
+  for (var i = 0; i < parts.length; i++) {
+    if (cur == null || typeof cur !== 'object' || !(parts[i] in cur)) return '';
+    cur = cur[parts[i]];
+  }
+  return cur == null ? '' : cur;
+}
+
+function firstValue(obj, paths) {
+  for (var i = 0; i < paths.length; i++) {
+    var v = getPathValue(obj, paths[i]);
+    if (Array.isArray(v)) {
+      if (v.length) return String(v[0]);
+      continue;
+    }
+    if (v !== '' && v != null) return String(v);
+  }
+  return '';
+}
+
+function firstArrayOrValue(obj, paths) {
+  for (var i = 0; i < paths.length; i++) {
+    var v = getPathValue(obj, paths[i]);
+    if (Array.isArray(v) && v.length) return v.map(function(x){ return String(x); }).join(', ');
+    if (v !== '' && v != null) return String(v);
+  }
+  return '';
+}
+
+function unwrapEventDocument(rawEvent) {
+  if (!rawEvent || typeof rawEvent !== 'object') return {};
+  if (rawEvent._source && typeof rawEvent._source === 'object') {
+    var merged = {};
+    Object.keys(rawEvent).forEach(function(k){ merged[k] = rawEvent[k]; });
+    Object.keys(rawEvent._source).forEach(function(k){ merged[k] = rawEvent._source[k]; });
+    return merged;
+  }
+  return rawEvent;
+}
+
+function normalizeJsonEvent(rawEvent) {
+  var event = unwrapEventDocument(rawEvent);
+  var warnings = [];
+  var ts = firstValue(event, ['@timestamp', 'timestamp', 'event.created', 'event.ingested', '_source.@timestamp']);
+  var category = firstArrayOrValue(event, ['event.category', 'event.kind', 'data_stream.dataset', 'winlog.channel']);
+  var eventAction = firstArrayOrValue(event, ['event.action', 'event.type', 'rule.name', 'message']);
+  var host = firstValue(event, ['host.name', 'host.hostname', 'computer_name', 'winlog.computer_name']);
+  var user = firstValue(event, ['user.name', 'user.id', 'winlog.event_data.TargetUserName', 'winlog.event_data.SubjectUserName']);
+  var sourceIp = firstValue(event, ['source.ip', 'client.ip', 'src_ip', 'winlog.event_data.IpAddress']);
+  var destinationIp = firstValue(event, ['destination.ip', 'server.ip', 'dst_ip']);
+  var url = firstValue(event, ['url.full', 'url.original', 'http.request.referrer']);
+  var processName = firstValue(event, ['process.name', 'process.executable', 'process.command_line', 'winlog.event_data.ProcessName', 'winlog.event_data.NewProcessName']);
+  var ruleName = firstValue(event, ['rule.name', 'kibana.alert.rule.name', 'signal.rule.name']);
+  var severity = firstValue(event, ['event.severity', 'log.level', 'kibana.alert.severity']);
+
+  if (!ts) warnings.push('Missing timestamp');
+  if (!host) warnings.push('Missing host');
+  if (!category) {
+    if (ruleName) category = 'Alert';
+    else if (processName) category = 'Process';
+    else if (url) category = 'Web';
+    else if (sourceIp || destinationIp) category = 'Network';
+    else if (user) category = 'Authentication';
+    else category = 'Event';
+  }
+
+  var normalized = {
+    id: makeEventId(),
+    fingerprint: '',
+    include: true,
+    timestamp: ts,
+    category: category,
+    sourceType: ruleName ? 'alert' : 'log',
+    eventAction: eventAction,
+    host: host,
+    user: user,
+    sourceIp: sourceIp,
+    destinationIp: destinationIp,
+    url: url,
+    processName: processName,
+    ruleName: ruleName,
+    severity: severity,
+    analystSummary: '',
+    raw: rawEvent,
+    parserWarnings: warnings
+  };
+  normalized.analystSummary = buildSuggestedTimelineSummary(normalized);
+  normalized.fingerprint = buildEventFingerprint(rawEvent, normalized);
+  return normalized;
+}
+
+function buildSuggestedTimelineSummary(ev) {
+  var cat = (ev.category || '').toLowerCase();
+  if (cat.indexOf('auth') !== -1 || (ev.eventAction || '').toLowerCase().indexOf('logon') !== -1) {
+    return 'Authentication event observed for user ' + (ev.user || 'unknown user') + ' on host ' + (ev.host || 'unknown host') + (ev.sourceIp ? ' from source IP ' + defangIp(ev.sourceIp) : '') + '.';
+  }
+  if (ev.processName || cat.indexOf('process') !== -1) {
+    return 'Process ' + (ev.processName || 'unknown process') + ' executed on host ' + (ev.host || 'unknown host') + (ev.user ? ' by user ' + ev.user : '') + '.';
+  }
+  if (ev.sourceIp || ev.destinationIp || cat.indexOf('network') !== -1) {
+    return 'Network activity observed from ' + (ev.sourceIp ? defangIp(ev.sourceIp) : 'unknown source') + ' to ' + (ev.destinationIp ? defangIp(ev.destinationIp) : 'unknown destination') + '.';
+  }
+  if (ev.url || cat.indexOf('web') !== -1) {
+    return 'Web activity observed involving ' + (ev.url ? defangUrl(ev.url) : 'an unknown URL') + '.';
+  }
+  if (ev.ruleName || cat.indexOf('alert') !== -1) {
+    return 'SIEM alert triggered: ' + (ev.ruleName || ev.eventAction || 'Unnamed rule') + '.';
+  }
+  return 'Event observed on ' + (ev.host || 'unknown host') + (ev.user ? ' involving ' + ev.user : '') + (ev.eventAction ? ' with action ' + ev.eventAction : '') + '.';
+}
+
+function buildEventFingerprint(rawEvent, normalizedEvent) {
+  if (rawEvent && rawEvent._index && rawEvent._id) return 'kibana:' + rawEvent._index + ':' + rawEvent._id;
+  var parts = [
+    normalizedEvent.timestamp || '',
+    normalizedEvent.host || '',
+    normalizedEvent.user || '',
+    normalizedEvent.eventAction || '',
+    normalizedEvent.sourceIp || '',
+    normalizedEvent.destinationIp || '',
+    normalizedEvent.processName || '',
+    normalizedEvent.url || ''
+  ];
+  return 'norm:' + parts.join('|').toLowerCase();
+}
+
+function parseMultipleJsonEvents(inputText) {
+  var out = { events: [], warnings: [] };
+  var text = (inputText || '').trim();
+  if (!text) {
+    out.warnings.push('No input provided.');
+    return out;
+  }
+
+  // First pass: direct JSON.parse to support object/array forms.
+  try {
+    var parsed = JSON.parse(text);
+    if (Array.isArray(parsed)) {
+      out.events = parsed.filter(function(x){ return x && typeof x === 'object'; });
+      if (out.events.length !== parsed.length) out.warnings.push('Some array entries were not objects and were skipped.');
+      return out;
+    }
+    if (parsed && typeof parsed === 'object') {
+      out.events = [parsed];
+      return out;
+    }
+    out.warnings.push('Parsed JSON was not an object or array.');
+    return out;
+  } catch(e) {
+    out.warnings.push('Direct JSON parse failed. Trying newline-separated JSON parsing.');
+  }
+
+  // Fallback: newline-delimited JSON objects.
+  var lines = text.split(/\r?\n/).map(function(l){ return l.trim(); }).filter(function(l){ return l; });
+  for (var i = 0; i < lines.length; i++) {
+    try {
+      var obj = JSON.parse(lines[i]);
+      if (obj && typeof obj === 'object') out.events.push(obj);
+      else out.warnings.push('Line ' + (i + 1) + ' is not a JSON object and was skipped.');
+    } catch(err) {
+      out.warnings.push('Line ' + (i + 1) + ' is malformed JSON and was skipped.');
+    }
+  }
+  if (!out.events.length) out.warnings.push('No valid JSON events were found.');
+  return out;
+}
+
+function compareTimelineTs(a, b) {
+  var aTs = (a.ts || '').trim();
+  var bTs = (b.ts || '').trim();
+  if (aTs && bTs) return aTs.localeCompare(bTs);
+  if (aTs && !bTs) return -1;
+  if (!aTs && bTs) return 1;
+  return 0;
+}
+
+function formatTimelineTime(ts) {
+  if (!ts) return 'Time not available';
+  var d = new Date(ts);
+  if (isNaN(d.getTime())) return ts;
+  return d.toISOString().replace('T', ' ').replace('.000Z', ' UTC').replace('Z', ' UTC');
+}
+
+function escAttr(s) {
+  return String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function parseEvidenceIntake() {
+  var input = document.getElementById('json_intake_input').value;
+  var parsed = parseMultipleJsonEvents(input);
+  var seen = {};
+  var existing = {};
+  caseState.events.forEach(function(ev){ existing[ev.fingerprint] = true; });
+  caseState.parsedEventsBuffer = parsed.events.map(function(raw) {
+    var ev = normalizeJsonEvent(raw);
+    if (seen[ev.fingerprint]) ev.parserWarnings.push('Potential duplicate in parsed batch');
+    if (existing[ev.fingerprint]) ev.parserWarnings.push('Already present in timeline evidence');
+    seen[ev.fingerprint] = true;
+    return ev;
+  });
+  renderParsedEventsReview(parsed.warnings);
+  saveToStorage();
+}
+
+function setIntakeSummary(message, isWarn) {
+  var el = document.getElementById('intake-summary');
+  if (!message) {
+    el.style.display = 'none';
+    el.textContent = '';
+    el.classList.remove('warn');
+    return;
+  }
+  el.style.display = 'block';
+  el.textContent = message;
+  el.classList.toggle('warn', !!isWarn);
+}
+
+function toggleParsedInclude(index) {
+  if (!caseState.parsedEventsBuffer[index]) return;
+  caseState.parsedEventsBuffer[index].include = !caseState.parsedEventsBuffer[index].include;
+  saveToStorage();
+  renderParsedEventsReview();
+}
+
+function toggleParsedRaw(index) {
+  var el = document.getElementById('raw-json-view-' + index);
+  if (!el) return;
+  el.style.display = el.style.display === 'block' ? 'none' : 'block';
+}
+
+function renderParsedEventsReview(parseWarnings) {
+  var body = document.getElementById('intake-events-body');
+  var wrap = document.getElementById('intake-events-wrap');
+  var rows = caseState.parsedEventsBuffer || [];
+  if (!rows.length) {
+    body.innerHTML = '';
+    wrap.style.display = 'none';
+    if (parseWarnings && parseWarnings.length) setIntakeSummary(parseWarnings.join(' | '), true);
+    return;
+  }
+  wrap.style.display = 'block';
+  var warningCount = 0;
+  body.innerHTML = rows.map(function(ev, i) {
+    warningCount += ev.parserWarnings.length;
+    var warnings = ev.parserWarnings.length ? 'Warnings: ' + ev.parserWarnings.join('; ') : '';
+    return '<tr>'
+      + '<td><label class="check-item" style="margin:0;"><input type="checkbox" ' + (ev.include ? 'checked' : '') + ' onclick="toggleParsedInclude(' + i + ')"><span class="check-box"></span></label></td>'
+      + '<td class="intake-cell-time">' + escHtml(formatTimelineTime(ev.timestamp)) + '</td>'
+      + '<td>' + escHtml(ev.category || 'Event') + '</td>'
+      + '<td>' + escHtml(ev.host || '—') + '</td>'
+      + '<td>' + escHtml(ev.user || '—') + '</td>'
+      + '<td class="intake-cell-mono">' + escHtml(ev.sourceIp ? defangIp(ev.sourceIp) : '—') + '</td>'
+      + '<td class="intake-cell-mono">' + escHtml(ev.destinationIp ? defangIp(ev.destinationIp) : '—') + '</td>'
+      + '<td>' + escHtml(ev.eventAction || ev.ruleName || '—') + '</td>'
+      + '<td>' + escHtml(ev.analystSummary || '—') + (warnings ? '<div style="margin-top:4px;color:var(--yellow);font-size:10px;">' + escHtml(warnings) + '</div>' : '') + '</td>'
+      + '<td><button class="btn" style="font-size:10px;padding:3px 8px;" onclick="toggleParsedRaw(' + i + ')">View</button>'
+      + '<div id="raw-json-view-' + i + '" class="raw-json-view">' + escHtml(JSON.stringify(ev.raw, null, 2)) + '</div></td>'
+      + '</tr>';
+  }).join('');
+  var baseSummary = rows.length + ' events parsed. ' + warningCount + ' warnings.';
+  if (parseWarnings && parseWarnings.length) baseSummary += ' Parser notes: ' + parseWarnings.join(' | ');
+  setIntakeSummary(baseSummary, warningCount > 0 || (parseWarnings && parseWarnings.length));
+}
+
+function sortCaseEvents() {
+  caseState.events.sort(function(a, b) {
+    return compareTimelineTs({ ts: a.timestamp || '' }, { ts: b.timestamp || '' });
+  });
+}
+
+function addSelectedParsedEventsToTimeline() {
+  var selected = caseState.parsedEventsBuffer.filter(function(ev){ return ev.include; });
+  if (!selected.length) {
+    setIntakeSummary('No events selected to add.', true);
+    return;
+  }
+  var existing = {};
+  caseState.events.forEach(function(ev){ existing[ev.fingerprint] = true; });
+  var added = 0;
+  var dupes = 0;
+  selected.forEach(function(ev) {
+    if (existing[ev.fingerprint]) {
+      dupes += 1;
+      return;
+    }
+    caseState.events.push(ev);
+    existing[ev.fingerprint] = true;
+    added += 1;
+  });
+  sortCaseEvents();
+  renderTimeline();
+  updatePreview();
+  saveToStorage();
+  setIntakeSummary(selected.length + ' selected. ' + added + ' added. ' + dupes + ' duplicate skipped.', dupes > 0);
+  openSection('sec-timeline');
+}
+
+function clearEvidenceIntake() {
+  document.getElementById('json_intake_input').value = '';
+  caseState.parsedEventsBuffer = [];
+  renderParsedEventsReview();
+  setIntakeSummary('', false);
+  saveToStorage();
+}
+
+function removeCaseEvent(index) {
+  caseState.events.splice(index, 1);
+  renderTimeline();
+  updatePreview();
+  saveToStorage();
+}
+
+function buildCombinedTimelineRows() {
+  var rows = [];
+  timelineData.forEach(function(e, i) {
+    var rawDesc = e.desc === '**ALERT TRIGGERED**' ? 'ALERT TRIGGERED' : e.desc === '**EVENT LOGGED**' ? 'EVENT LOGGED' : e.desc;
+    rows.push({
+      source: 'manual',
+      index: i,
+      ts: e.ts || '',
+      category: 'Manual',
+      eventText: rawDesc
+    });
+  });
+  caseState.events.forEach(function(ev, i) {
+    rows.push({
+      source: 'parsed',
+      index: i,
+      ts: ev.timestamp || '',
+      category: ev.category || 'Event',
+      eventText: ev.analystSummary || buildSuggestedTimelineSummary(ev)
+    });
+  });
+  rows.sort(compareTimelineTs);
+  return rows;
+}
+
+function deleteCombinedTimelineEntry(source, index) {
+  if (source === 'manual') deleteTimelineEntry(index);
+  else if (source === 'parsed') removeCaseEvent(index);
+}
+
 // ── PASTE MODAL ──────────────────────────────────────────────────────────────
 
 
 function resetAllSilent() {
   timelineData = []; externalLinks = [];
-  ['raw_input','impact','tl_desc','link_title','link_url','analysis','summary','report_title','escalate-detail','tune-detail'].forEach(function(id){
+  caseState.events = [];
+  caseState.parsedEventsBuffer = [];
+  ['raw_input','json_intake_input','impact','tl_desc','link_title','link_url','analysis','summary','report_title','escalate-detail','tune-detail'].forEach(function(id){
     var el = document.getElementById(id); if (el) el.value = '';
   });
   document.getElementById('v-fp').checked = true;
@@ -1077,7 +1550,7 @@ function resetAllSilent() {
   document.getElementById('act_type').value = 'Malware';
   document.getElementById('act-type-row').style.display = 'none';
   document.getElementById('impact-section').style.display = 'none';
-  renderTimeline(); renderLinks();
+  renderTimeline(); renderParsedEventsReview(); renderLinks();
   customFields = []; renderCustomFields();
   document.getElementById('mitre-panel').style.display = 'none';
   document.getElementById('fp-panel').style.display = 'none';
@@ -1088,6 +1561,7 @@ function resetAllSilent() {
   document.getElementById('mitre-chains').innerHTML = '';
   document.getElementById('fp-list').innerHTML = '';
   document.getElementById('rule-desc-text').textContent = '';
+  setIntakeSummary('', false);
   try { localStorage.clear(); } catch(e) {}
   updatePreview();
 }
@@ -1099,6 +1573,7 @@ function onRawChange() {
   var banner = document.getElementById('new-json-banner');
   if (banner) {
     var hasData = timelineData.some(function(e){ return e.desc !== '**ALERT TRIGGERED**' && e.desc !== '**EVENT LOGGED**'; })
+      || caseState.events.length > 0
       || document.getElementById('analysis').value.trim()
       || document.getElementById('summary').value.trim()
       || customFields.length > 0;
@@ -1401,7 +1876,7 @@ function renderRuleDescPanel(raw) {
 }
 
 function escHtml(s) {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
 // ── TIMELINE ─────────────────────────────────────────────────────────────────
@@ -1422,12 +1897,15 @@ function addTimelineEntry() {
 function deleteTimelineEntry(i) { timelineData.splice(i,1); renderTimeline(); updatePreview(); saveToStorage(); }
 
 function renderTimeline() {
-  document.getElementById('timeline-list').innerHTML = timelineData.map(function(e,i){
-    var isAlert = e.desc === '**ALERT TRIGGERED**' || e.desc === '**EVENT LOGGED**';
+  var rows = buildCombinedTimelineRows();
+  document.getElementById('timeline-list').innerHTML = rows.map(function(e){
+    var isAlert = e.eventText === 'ALERT TRIGGERED' || e.eventText === 'EVENT LOGGED';
+    var iconText = e.eventText === 'ALERT TRIGGERED' ? '⚡ ALERT TRIGGERED' : e.eventText === 'EVENT LOGGED' ? '📋 EVENT LOGGED' : e.eventText;
+    var labelPrefix = e.source === 'parsed' ? '[' + (e.category || 'Event') + '] ' : '';
     return '<div class="tl-entry">'
-      + '<span class="tl-ts">'+e.ts+'</span>'
-      + '<span class="tl-desc'+(isAlert?' tl-alert':'')+'">'+( e.desc === '**ALERT TRIGGERED**' ? '⚡ ALERT TRIGGERED' : e.desc === '**EVENT LOGGED**' ? '📋 EVENT LOGGED' : e.desc )+'</span>'
-      + '<button class="btn-icon" onclick="deleteTimelineEntry('+i+')">✕</button>'
+      + '<span class="tl-ts">'+escHtml(e.ts || 'Time not available')+'</span>'
+      + '<span class="tl-desc'+(isAlert?' tl-alert':'')+'">'+escHtml(labelPrefix + iconText)+'</span>'
+      + '<button class="btn-icon" onclick="deleteCombinedTimelineEntry(\''+e.source+'\','+e.index+')">✕</button>'
       + '</div>';
   }).join('');
 }
@@ -1453,6 +1931,23 @@ function renderLinks() {
       + '<button class="btn-icon" onclick="deleteLink('+i+')">✕</button>'
       + '</div>';
   }).join('');
+}
+
+function buildTimelineRowsForReport() {
+  return buildCombinedTimelineRows().map(function(r) {
+    var eventText = r.eventText || 'Event observed.';
+    if (r.source === 'parsed') {
+      var ref = caseState.events[r.index];
+      if (ref && ref.url) eventText = eventText.replace(ref.url, defangUrl(ref.url));
+      if (ref && ref.sourceIp) eventText = eventText.replace(ref.sourceIp, defangIp(ref.sourceIp));
+      if (ref && ref.destinationIp) eventText = eventText.replace(ref.destinationIp, defangIp(ref.destinationIp));
+    }
+    return {
+      time: formatTimelineTime(r.ts),
+      category: r.category || 'Event',
+      event: eventText
+    };
+  });
 }
 
 // ── BUILD MARKDOWN ────────────────────────────────────────────────────────────
@@ -1532,9 +2027,10 @@ function buildMarkdown() {
     }
   }
 
-  md.push('', '### 📅 Timeline', '', '| Timestamp | Event Description |', '| :--- | :--- |');
-  if (timelineData.length) timelineData.forEach(function(e){ md.push('| `'+e.ts+'` | '+e.desc+' |'); });
-  else md.push('| — | _No events logged yet._ |');
+  var timelineRowsMd = buildTimelineRowsForReport();
+  md.push('', '### 📅 Timeline', '', '| Time | Category | Event |', '| :--- | :--- | :--- |');
+  if (timelineRowsMd.length) timelineRowsMd.forEach(function(e){ md.push('| `'+e.time+'` | '+e.category+' | '+e.event+' |'); });
+  else md.push('| — | — | _No events logged yet._ |');
 
   md.push('', '### 🔍 Triage & Analysis', analysis);
   if (externalLinks.length) {
@@ -1636,9 +2132,13 @@ function buildJira() {
 
   j.push('');
   j.push('h3. 📅 Timeline');
-  j.push('|| Timestamp || Event Description ||');
-  if (timelineData.length) timelineData.forEach(function(e){ var jDesc = e.desc.replace(/\*\*([^*]+)\*\*/g, '*$1*'); j.push('| {{'+e.ts+'}} | '+jDesc+' |'); });
-  else j.push('| — | _No events logged yet._ |');
+  j.push('|| Time || Category || Event ||');
+  var timelineRowsJ = buildTimelineRowsForReport();
+  if (timelineRowsJ.length) timelineRowsJ.forEach(function(e){
+    var jDesc = e.event.replace(/\*\*([^*]+)\*\*/g, '*$1*');
+    j.push('| {{'+e.time+'}} | '+e.category+' | '+jDesc+' |');
+  });
+  else j.push('| — | — | _No events logged yet._ |');
 
   j.push('');
   j.push('h3. 🔍 Triage & Analysis');
@@ -2151,6 +2651,9 @@ function resetKeepJson() {
   // Clear everything except the raw JSON input, then re-process it
   var raw = document.getElementById('raw_input').value;
   timelineData = []; externalLinks = [];
+  caseState.events = [];
+  caseState.parsedEventsBuffer = [];
+  document.getElementById('json_intake_input').value = '';
   ['impact','tl_desc','link_title','link_url','analysis','summary','report_title','escalate-detail','tune-detail'].forEach(function(id){
     document.getElementById(id).value = '';
   });
@@ -2169,7 +2672,7 @@ function resetKeepJson() {
   document.getElementById('act_type').value = 'Malware';
   document.getElementById('act-type-row').style.display = 'none';
   document.getElementById('impact-section').style.display = 'none';
-  renderTimeline(); renderLinks();
+  renderTimeline(); renderParsedEventsReview(); renderLinks();
   customFields = []; renderCustomFields();
   document.getElementById('mitre-panel').style.display = 'none';
   document.getElementById('fp-panel').style.display = 'none';
@@ -2180,6 +2683,7 @@ function resetKeepJson() {
   document.getElementById('mitre-chains').innerHTML = '';
   document.getElementById('fp-list').innerHTML = '';
   document.getElementById('rule-desc-text').textContent = '';
+  setIntakeSummary('', false);
   var b = document.getElementById('new-json-banner'); if (b) b.style.display = 'none';
   try { localStorage.clear(); } catch(e) {}
   // Re-process the JSON — use rAF to batch DOM updates and avoid flash
@@ -2192,7 +2696,9 @@ function resetAll() {
   if (!confirm('Reset all fields? This cannot be undone.')) return;
   var b = document.getElementById('new-json-banner'); if (b) b.style.display = 'none';
   timelineData = []; externalLinks = [];
-  ['raw_input','impact','tl_desc','link_title','link_url','analysis','summary','report_title','escalate-detail','tune-detail'].forEach(function(id){
+  caseState.events = [];
+  caseState.parsedEventsBuffer = [];
+  ['raw_input','json_intake_input','impact','tl_desc','link_title','link_url','analysis','summary','report_title','escalate-detail','tune-detail'].forEach(function(id){
     document.getElementById(id).value = '';
   });
   document.getElementById('v-fp').checked = true;
@@ -2214,7 +2720,7 @@ function resetAll() {
   document.getElementById('act_type').value = 'Malware';
   document.getElementById('act-type-row').style.display = 'none';
   document.getElementById('impact-section').style.display = 'none';
-  renderTimeline(); renderLinks();
+  renderTimeline(); renderParsedEventsReview(); renderLinks();
   customFields = [];
   renderCustomFields();
   document.getElementById('mitre-panel').style.display = 'none';
@@ -2226,8 +2732,42 @@ function resetAll() {
   document.getElementById('mitre-chains').innerHTML = '';
   document.getElementById('fp-list').innerHTML = '';
   document.getElementById('rule-desc-text').textContent = '';
+  setIntakeSummary('', false);
   try { localStorage.clear(); } catch(e) {}
   updatePreview();
+}
+
+// ── DEV SMOKE TESTS ─────────────────────────────────────────────────────────
+function runTimelineParserSmokeTests() {
+  var tests = [];
+  function assert(name, condition) {
+    tests.push({ name: name, pass: !!condition });
+  }
+
+  var single = parseMultipleJsonEvents('{"@timestamp":"2026-05-30T10:00:00Z","event.action":"logon-failed"}');
+  assert('single JSON object parse', single.events.length === 1);
+
+  var arr = parseMultipleJsonEvents('[{"@timestamp":"2026-05-30T10:00:00Z"},{"@timestamp":"2026-05-30T10:01:00Z"}]');
+  assert('JSON array parse', arr.events.length === 2);
+
+  var ndjson = parseMultipleJsonEvents('{"@timestamp":"2026-05-30T10:00:00Z"}\n{"@timestamp":"2026-05-30T10:01:00Z"}');
+  assert('newline-separated JSON parse', ndjson.events.length === 2);
+
+  var rawEvent = {
+    '@timestamp': '2026-05-30T10:00:00Z',
+    'host.name': 'HOST-01',
+    'user.name': 'j.smith',
+    'event.action': 'logon-failed',
+    'source.ip': '10.0.0.5'
+  };
+  var n1 = normalizeJsonEvent(rawEvent);
+  var n2 = normalizeJsonEvent(rawEvent);
+  assert('dedupe fingerprint stable', n1.fingerprint === n2.fingerprint);
+
+  var passCount = tests.filter(function(t){ return t.pass; }).length;
+  console.log('[Timeline Intake Smoke Tests] ' + passCount + '/' + tests.length + ' passed');
+  tests.forEach(function(t){ console.log((t.pass ? 'PASS: ' : 'FAIL: ') + t.name); });
+  return tests;
 }
 
 // ── HELP PANELS ───────────────────────────────────────────────────────────────
