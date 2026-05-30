@@ -255,6 +255,55 @@
   .help-panel p { margin-bottom: 8px; }
   .help-panel ul { padding-left: 16px; margin-bottom: 8px; }
   .help-panel li { margin-bottom: 3px; }
+
+  /* ── TRIAGE SUPPORT ── */
+  .triage-panel {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+  }
+  .triage-panel-title {
+    font-family: var(--mono); font-size: 10px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.07em;
+    color: var(--text2); margin-bottom: 8px;
+  }
+  .triage-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .triage-grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .triage-note {
+    font-size: 11px; color: var(--text3); line-height: 1.5;
+    margin-top: 6px;
+  }
+  .triage-scroll {
+    max-height: 170px; overflow: auto;
+    background: var(--bg4); border: 1px solid var(--border);
+    border-radius: 5px; padding: 8px 10px;
+    font-size: 11px; line-height: 1.6; white-space: pre-wrap;
+    color: var(--text2); font-family: var(--mono);
+  }
+  .triage-checklist { display: flex; flex-direction: column; gap: 6px; }
+  .triage-checklist .check-label { line-height: 1.4; }
+  .triage-table { width: 100%; border-collapse: collapse; font-size: 11px; table-layout: fixed; }
+  .triage-table th {
+    font-family: var(--mono); font-size: 10px; text-transform: uppercase;
+    letter-spacing: 0.05em; background: var(--bg4); color: var(--text2);
+    padding: 6px 8px; border: 1px solid var(--border); text-align: left;
+  }
+  .triage-table td {
+    padding: 5px 8px; border: 1px solid var(--border); color: var(--text);
+    vertical-align: top; word-break: break-word;
+  }
+  .pivot-row {
+    display: grid; grid-template-columns: 150px 1fr auto;
+    gap: 8px; align-items: center;
+    margin-bottom: 6px;
+  }
+  .pivot-query {
+    background: var(--bg4); border: 1px solid var(--border); border-radius: 4px;
+    padding: 6px 8px; font-family: var(--mono); font-size: 11px; color: var(--text2);
+    white-space: pre-wrap;
+  }
   .example {
     background: var(--bg3); border: 1px solid var(--border);
     border-left: 2px solid var(--accent); border-radius: 4px;
@@ -756,6 +805,74 @@ VirusTotal shows 0/72 detections for the IP however it does not appear in any th
 No prior alerts on this host in the last 30 days. The destination port 4444 is commonly associated with Metasploit listeners.</div>
         </div></div>
 
+        <div class="triage-panel" id="triage-decision-panel">
+          <div class="triage-panel-title">Triage Decision Support</div>
+          <div class="triage-grid-3">
+            <div>
+              <label class="field-label" style="margin-top:0;">Verdict</label>
+              <select id="triage_verdict" onchange="onTriageFieldChange('verdict', this.value)"></select>
+            </div>
+            <div>
+              <label class="field-label" style="margin-top:0;">Confidence</label>
+              <select id="triage_confidence" onchange="onTriageFieldChange('confidence', this.value)"></select>
+            </div>
+            <div>
+              <label class="field-label" style="margin-top:0;">Business Impact</label>
+              <select id="triage_businessImpact" onchange="onTriageFieldChange('businessImpact', this.value)"></select>
+            </div>
+          </div>
+          <div class="triage-grid" style="margin-top:8px;">
+            <div>
+              <label class="field-label" style="margin-top:0;">Recommended Action</label>
+              <select id="triage_recommendedAction" onchange="onTriageFieldChange('recommendedAction', this.value)"></select>
+            </div>
+            <div>
+              <label class="field-label" style="margin-top:0;">Escalation Required</label>
+              <select id="triage_escalationRequired" onchange="onTriageFieldChange('escalationRequired', this.value)"></select>
+            </div>
+          </div>
+          <label class="field-label">Analyst Rationale</label>
+          <textarea id="triage_analystRationale" rows="3" placeholder="Analyst rationale and decision notes..." oninput="onTriageFieldChange('analystRationale', this.value)"></textarea>
+        </div>
+
+        <div class="triage-panel" id="playbook-guidance-panel">
+          <div class="triage-panel-title">Playbook / Rule Guidance</div>
+          <div id="playbook-guidance-content" class="triage-note"></div>
+        </div>
+
+        <div class="triage-panel" id="evidence-checklist-panel">
+          <div class="triage-panel-title">Evidence Checklist</div>
+          <div id="evidence-checklist-list" class="triage-checklist"></div>
+        </div>
+
+        <div class="triage-panel" id="known-good-checks-panel">
+          <div class="triage-panel-title">Known-Good / False Positive Checks</div>
+          <div id="known-good-checks-list" class="triage-checklist"></div>
+        </div>
+
+        <div class="triage-panel" id="observables-panel">
+          <div class="triage-panel-title">Observables</div>
+          <div style="overflow:auto;max-height:260px;">
+            <table class="triage-table">
+              <thead>
+                <tr>
+                  <th style="width:120px;">Type</th>
+                  <th style="width:210px;">Value</th>
+                  <th style="width:110px;">Source</th>
+                  <th>Context</th>
+                  <th style="width:130px;">Disposition</th>
+                </tr>
+              </thead>
+              <tbody id="observables-body"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="triage-panel" id="pivots-panel">
+          <div class="triage-panel-title">Suggested Pivots</div>
+          <div id="pivot-list"></div>
+        </div>
+
         <!-- Investigation Guide -->
         <div id="inv-guide-panel" style="display:none;margin-bottom:12px;">
           <label class="field-label" style="margin-bottom:6px;">📖 Investigation Guide</label>
@@ -813,9 +930,12 @@ No prior alerts on this host in the last 30 days. The destination port 4444 is c
           <ul><li><strong>False Positive</strong> — Alert fired incorrectly. Rule needs tuning.</li><li><strong>Benign</strong> — Activity is confirmed legitimate. No threat present.</li><li><strong>True Positive</strong> — Confirmed malicious or policy-violating activity.</li></ul>
         </div></div>
         <div class="radio-group">
-          <div class="radio-opt"><input type="radio" name="verdict" id="v-fp" value="False Positive" checked onchange="onVerdictChange()"><label for="v-fp">False Positive</label></div>
-          <div class="radio-opt"><input type="radio" name="verdict" id="v-benign" value="Benign" onchange="onVerdictChange()"><label for="v-benign">Benign</label></div>
+          <div class="radio-opt"><input type="radio" name="verdict" id="v-pending" value="Pending" checked onchange="onVerdictChange()"><label for="v-pending">Pending</label></div>
+          <div class="radio-opt"><input type="radio" name="verdict" id="v-fp" value="False Positive" onchange="onVerdictChange()"><label for="v-fp">False Positive</label></div>
+          <div class="radio-opt"><input type="radio" name="verdict" id="v-btp" value="Benign True Positive" onchange="onVerdictChange()"><label for="v-btp">Benign True Positive</label></div>
+          <div class="radio-opt"><input type="radio" name="verdict" id="v-suspicious" value="Suspicious" onchange="onVerdictChange()"><label for="v-suspicious">Suspicious</label></div>
           <div class="radio-opt"><input type="radio" name="verdict" id="v-tp" value="True Positive" onchange="onVerdictChange()"><label for="v-tp">True Positive</label></div>
+          <div class="radio-opt"><input type="radio" name="verdict" id="v-escalated" value="Escalated" onchange="onVerdictChange()"><label for="v-escalated">Escalated</label></div>
         </div>
         <div id="act-type-row" style="display:none;">
           <label class="field-label" style="margin-bottom:4px;">Activity Type</label>
@@ -899,6 +1019,17 @@ var customFields  = [];
 var caseState = {
   events: [],
   parsedEventsBuffer: [],
+  triage: {
+    verdict: 'Pending',
+    confidence: 'Pending',
+    recommendedAction: 'Pending',
+    escalationRequired: 'Pending',
+    businessImpact: 'Unknown',
+    analystRationale: '',
+    checklist: {},
+    knownGoodChecks: {},
+    observableDispositions: {}
+  },
   ruleContext: {
     name: '',
     description: '',
@@ -914,6 +1045,12 @@ var caseState = {
 };
 var SECTION_ORDER = ['sec-alert', 'sec-timeline', 'sec-intake', 'sec-triage', 'sec-conclusion'];
 var currentFormat = 'md';
+
+var TRIAGE_VERDICTS = ['Pending', 'False Positive', 'Benign True Positive', 'Suspicious', 'True Positive', 'Escalated'];
+var TRIAGE_CONFIDENCE = ['Pending', 'Low', 'Medium', 'High'];
+var TRIAGE_RECOMMENDED_ACTIONS = ['Pending', 'Monitor', 'Close as Benign', 'Escalate to L2/L3', 'Escalate to CPT/DFIR', 'Isolate Host', 'Disable Account', 'Block Indicator', 'Raise Incident Ticket', 'Request More Evidence'];
+var TRIAGE_ESCALATION = ['Pending', 'No', 'Yes - L2/L3', 'Yes - CPT/DFIR', 'Yes - Threat Intel', 'Yes - Infrastructure / Network Team'];
+var TRIAGE_BUSINESS_IMPACT = ['Unknown', 'None Known', 'Low', 'Medium', 'High'];
 
 var FIELDS = [
   "kibana.alert.rule.name",
@@ -1075,6 +1212,7 @@ function fieldLabel(f) {
 // ── STORAGE ───────────────────────────────────────────────────────────────────
 function saveToStorage() {
   try {
+    ensureTriageState();
     localStorage.setItem('soc_raw',      document.getElementById('raw_input').value);
     localStorage.setItem('soc_intake_raw', document.getElementById('json_intake_input').value);
     localStorage.setItem('soc_impact',   document.getElementById('impact').value);
@@ -1088,6 +1226,7 @@ function saveToStorage() {
     localStorage.setItem('soc_timeline', JSON.stringify(timelineData));
     localStorage.setItem('soc_case_events', JSON.stringify(caseState.events));
     localStorage.setItem('soc_parsed_events', JSON.stringify(caseState.parsedEventsBuffer));
+    localStorage.setItem('soc_triage', JSON.stringify(caseState.triage));
     localStorage.setItem('soc_rule_context', JSON.stringify(caseState.ruleContext));
     localStorage.setItem('soc_links',    JSON.stringify(externalLinks));
     var selStep = document.querySelector('input[name="next-step"]:checked');
@@ -1121,10 +1260,13 @@ function loadFromStorage() {
     if (savedTitle) { var te = document.getElementById('report_title'); te.value = savedTitle; te._userEdited = localStorage.getItem('soc_title_edited') === '1'; }
     var verdict = localStorage.getItem('soc_verdict');
     if (verdict) { var r = document.querySelector('input[name="verdict"][value="'+verdict+'"]'); if(r) r.checked = true; }
+    else document.getElementById('v-pending').checked = true;
     var tl = localStorage.getItem('soc_timeline'); if (tl) timelineData = JSON.parse(tl);
     var ce = localStorage.getItem('soc_case_events'); if (ce) caseState.events = JSON.parse(ce);
     var pe = localStorage.getItem('soc_parsed_events'); if (pe) caseState.parsedEventsBuffer = JSON.parse(pe);
+    var tr = localStorage.getItem('soc_triage'); if (tr) caseState.triage = JSON.parse(tr);
     var rc = localStorage.getItem('soc_rule_context'); if (rc) caseState.ruleContext = JSON.parse(rc);
+    ensureTriageState();
     var lk = localStorage.getItem('soc_links');    if (lk) externalLinks = JSON.parse(lk);
     var stepsRaw = localStorage.getItem('soc_steps');
     if (stepsRaw) {
@@ -1142,6 +1284,7 @@ function loadFromStorage() {
     }
     renderTimeline();
     renderParsedEventsReview();
+    renderTriageSupportPanels();
     renderLinks();
     updatePreview();
     if (raw) {
@@ -1387,6 +1530,350 @@ function mergeRuleContext(nextCtx) {
   target.sourceFields = target.sourceFields || {};
   Object.keys(nextCtx.sourceFields || {}).forEach(function(k) { target.sourceFields[k] = nextCtx.sourceFields[k]; });
   caseState.ruleContext = target;
+}
+
+// ── TRIAGE SUPPORT PACK V1 ─────────────────────────────────────────────────
+var triageObservables = [];
+var triagePivots = [];
+
+function getDefaultTriageState() {
+  return {
+    verdict: 'Pending',
+    confidence: 'Pending',
+    recommendedAction: 'Pending',
+    escalationRequired: 'Pending',
+    businessImpact: 'Unknown',
+    analystRationale: '',
+    checklist: {},
+    knownGoodChecks: {},
+    observableDispositions: {}
+  };
+}
+
+function ensureTriageState() {
+  var d = getDefaultTriageState();
+  caseState.triage = caseState.triage || {};
+  Object.keys(d).forEach(function(k) {
+    if (caseState.triage[k] == null) caseState.triage[k] = d[k];
+  });
+  caseState.triage.checklist = caseState.triage.checklist || {};
+  caseState.triage.knownGoodChecks = caseState.triage.knownGoodChecks || {};
+  caseState.triage.observableDispositions = caseState.triage.observableDispositions || {};
+}
+
+function toItemKey(label) {
+  return label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+}
+
+function getRawAlertEvent() {
+  var raw = document.getElementById('raw_input').value.trim();
+  if (!raw) return null;
+  var parsed = parseJsonSafe(raw);
+  if (!parsed || typeof parsed !== 'object') return null;
+  return unwrapEventDocument(parsed);
+}
+
+function detectTriageProfile() {
+  var all = caseState.events.slice();
+  var rawEv = getRawAlertEvent();
+  if (rawEv) all.push(normalizeJsonEvent(rawEv));
+  var profile = { web: false, authVault: false, process: false };
+  all.forEach(function(e) {
+    if (e.url || e.domain || e.httpMethod || e.httpStatus || e.destinationBytes || (e.category || '').toLowerCase().indexOf('web') !== -1) profile.web = true;
+    if (e.vaultOperation || e.vaultMountType || (e.eventAction || '').toLowerCase().indexOf('vault') !== -1 || (e.category || '').toLowerCase().indexOf('auth') !== -1) profile.authVault = true;
+    if (e.processName || (e.category || '').toLowerCase().indexOf('process') !== -1 || (e.eventAction || '').toLowerCase().indexOf('powershell') !== -1) profile.process = true;
+  });
+  return profile;
+}
+
+function getEvidenceChecklistItems() {
+  var base = [
+    'Alert details reviewed',
+    'Rule description / playbook reviewed',
+    'Host identified',
+    'User identified',
+    'Source IP reviewed',
+    'Destination IP / domain reviewed',
+    'Timeline built',
+    'Related authentication checked',
+    'Related process activity checked',
+    'Related network activity checked',
+    'Known-good / business context checked',
+    'Escalation criteria reviewed'
+  ];
+  var profile = detectTriageProfile();
+  if (profile.web) base = base.concat([
+    'File size reviewed',
+    'File name / URL reviewed',
+    'HTTP method/status reviewed',
+    'User agent reviewed',
+    'Previous alerts for user/source checked',
+    'Other users/hosts accessing same URL checked'
+  ]);
+  if (profile.authVault) base = base.concat([
+    'Access time reviewed',
+    'Source IP / remote address reviewed',
+    'Account or token owner reviewed',
+    'Policies / permissions reviewed',
+    'Related failed/successful activity checked',
+    'Service account or automation context checked'
+  ]);
+  if (profile.process) base = base.concat([
+    'Command line reviewed',
+    'Parent process reviewed',
+    'Encoded/obfuscated command checked',
+    'File creation reviewed',
+    'External network activity checked'
+  ]);
+  return uniqValues(base);
+}
+
+function getKnownGoodCheckItems() {
+  var base = [
+    'Approved change or maintenance window confirmed',
+    'Expected admin or automation activity confirmed',
+    'Known business process confirmed',
+    'Previous benign pattern identified',
+    'Asset owner / system owner contacted where required',
+    'No suspicious related activity found'
+  ];
+  var profile = detectTriageProfile();
+  if (profile.web) base = base.concat([
+    'Legitimate large business download confirmed',
+    'Software update or backup/sync activity confirmed',
+    'URL/domain expected for user or unit',
+    'File type expected',
+    'Level 3/4, system administrator, or ITSO confirmation obtained where required'
+  ]);
+  if (profile.authVault) base = base.concat([
+    'Access expected for service account or user role',
+    'Access time approved or expected',
+    'Source IP expected',
+    'Vault policy / mount point expected',
+    'Scheduled automation or maintenance confirmed'
+  ]);
+  if (profile.process) base = base.concat([
+    'Approved admin script confirmed',
+    'Software deployment or patching activity confirmed',
+    'Parent process expected',
+    'Destination domain/IP expected',
+    'Encoded command decoded and benign'
+  ]);
+  return uniqValues(base);
+}
+
+function onTriageCheckToggle(kind, key, checked) {
+  ensureTriageState();
+  if (kind === 'evidence') caseState.triage.checklist[key] = !!checked;
+  else caseState.triage.knownGoodChecks[key] = !!checked;
+  updatePreview();
+}
+
+function renderChecklistPanel(containerId, items, kind) {
+  var map = kind === 'evidence' ? caseState.triage.checklist : caseState.triage.knownGoodChecks;
+  var html = items.map(function(label) {
+    var key = toItemKey(label);
+    var checked = !!map[key];
+    return '<label class="check-item">'
+      + '<input type="checkbox" ' + (checked ? 'checked' : '') + ' onchange="onTriageCheckToggle(\'' + kind + '\',\'' + key + '\',this.checked)">'
+      + '<span class="check-box"></span>'
+      + '<span class="check-label">' + escHtml(label) + '</span>'
+      + '</label>';
+  }).join('');
+  document.getElementById(containerId).innerHTML = html || '<div class="triage-note">No checklist items available.</div>';
+}
+
+function populateSelect(id, options, selected) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  el.innerHTML = options.map(function(o){ return '<option value="' + escAttr(o) + '">' + escHtml(o) + '</option>'; }).join('');
+  el.value = options.indexOf(selected) !== -1 ? selected : options[0];
+}
+
+function syncVerdictRadioFromTriage() {
+  var v = caseState.triage.verdict || 'Pending';
+  var radio = document.querySelector('input[name="verdict"][value="' + v + '"]');
+  if (radio) radio.checked = true;
+}
+
+function onTriageFieldChange(field, value) {
+  ensureTriageState();
+  caseState.triage[field] = value;
+  if (field === 'verdict') {
+    syncVerdictRadioFromTriage();
+    onVerdictChange();
+    return;
+  }
+  updatePreview();
+}
+
+function onObservableDispositionChange(key, value) {
+  ensureTriageState();
+  caseState.triage.observableDispositions[key] = value;
+  updatePreview();
+}
+
+function onObservableDispositionChangeByIndex(index, value) {
+  var obs = triageObservables[index];
+  if (!obs) return;
+  onObservableDispositionChange(obs.id, value);
+}
+
+function addObservable(list, map, type, value, source, context) {
+  if (!value) return;
+  var clean = String(value).trim();
+  if (!clean) return;
+  var key = type + '|' + clean.toLowerCase();
+  if (map[key]) return;
+  map[key] = true;
+  var display = clean;
+  if (type === 'Source IP' || type === 'Destination IP') display = defangIp(clean);
+  if (type === 'Domain') display = defangIfNeeded(clean, 'url.domain');
+  if (type === 'URL') display = defangUrl(clean);
+  var disp = caseState.triage.observableDispositions[key] || 'Unknown';
+  list.push({ id: key, type: type, value: display, source: source, context: context || '', disposition: disp });
+}
+
+function buildObservables() {
+  ensureTriageState();
+  var list = [];
+  var seen = {};
+  var rawEv = getRawAlertEvent();
+  var all = caseState.events.slice();
+  if (rawEv) all.push(normalizeJsonEvent(rawEv));
+
+  all.forEach(function(e) {
+    addObservable(list, seen, 'Host', e.host, 'Timeline', 'Host context');
+    addObservable(list, seen, 'User', e.user, 'Timeline', 'User context');
+    addObservable(list, seen, 'Source IP', e.sourceIp, 'Timeline', 'Source address');
+    addObservable(list, seen, 'Destination IP', e.destinationIp, 'Timeline', 'Destination address');
+    addObservable(list, seen, 'Domain', e.domain, 'Timeline', 'Domain indicator');
+    addObservable(list, seen, 'URL', e.url, 'Timeline', 'Web indicator');
+    addObservable(list, seen, 'Process', e.processName, 'Timeline', 'Process activity');
+    addObservable(list, seen, 'Vault Operation', e.vaultOperation, 'Timeline', 'Vault activity');
+    addObservable(list, seen, 'Vault Mount', e.vaultMountType || e.vaultMountPoint, 'Timeline', 'Vault mount context');
+    addObservable(list, seen, 'Token Type', e.vaultTokenType, 'Timeline', 'Vault token context');
+    addObservable(list, seen, 'Rule', e.ruleName, 'Alert', 'Detection rule');
+    (e.mitreTechniques || []).forEach(function(t){ addObservable(list, seen, 'MITRE Technique', t, 'Alert', 'MITRE mapping'); });
+    (e.relatedHosts || []).forEach(function(h){ addObservable(list, seen, 'Host', h, 'Timeline', 'Related host'); });
+  });
+
+  var rc = caseState.ruleContext || {};
+  addObservable(list, seen, 'Rule', rc.name, 'Rule Context', 'Rule metadata');
+  (rc.mitreTechniques || []).forEach(function(t){ addObservable(list, seen, 'MITRE Technique', t, 'Rule Context', 'MITRE mapping'); });
+  (rc.mitreTactics || []).forEach(function(t){ addObservable(list, seen, 'Other', t, 'Rule Context', 'MITRE tactic'); });
+  return list;
+}
+
+function buildSuggestedPivotsFromObservables(observables) {
+  var pivots = [];
+  var seen = {};
+  function addPivot(name, query) {
+    if (!query || seen[query]) return;
+    seen[query] = true;
+    pivots.push({ name: name, query: query });
+  }
+  observables.forEach(function(o) {
+    var rawVal = String(o.value || '').replace(/\[\.\]/g, '.').replace(/^hxxps?:\/\//i, function(m){ return m.toLowerCase().indexOf('hxxps') === 0 ? 'https://' : 'http://'; });
+    if (o.type === 'Host') addPivot('Host Pivot', 'host.name:"' + rawVal + '"');
+    if (o.type === 'User') {
+      addPivot('User Pivot', 'user.name:"' + rawVal + '"');
+      addPivot('User Authentication Pivot', 'user.name:"' + rawVal + '" AND event.category:"authentication"');
+      addPivot('User Web Pivot', 'user.name:"' + rawVal + '" AND event.category:"web"');
+    }
+    if (o.type === 'Source IP') {
+      addPivot('Source IP Pivot', 'source.ip:"' + rawVal + '" OR client.ip:"' + rawVal + '" OR hashicorp_vault.audit.request.remote_address:"' + rawVal + '"');
+      addPivot('Large Download Pivot', 'source.ip:"' + rawVal + '" AND destination.bytes >= 10000000');
+      addPivot('Vault Remote Pivot', 'hashicorp_vault.audit.request.remote_address:"' + rawVal + '"');
+    }
+    if (o.type === 'Destination IP') addPivot('Destination IP Pivot', 'destination.ip:"' + rawVal + '" OR server.ip:"' + rawVal + '"');
+    if (o.type === 'Domain' || o.type === 'URL') addPivot('Domain / URL Pivot', 'url.original:*"' + rawVal.replace(/^https?:\/\//i, '') + '"* OR url.domain:"' + rawVal.replace(/^https?:\/\//i, '') + '" OR dns.question.name:"' + rawVal.replace(/^https?:\/\//i, '') + '"');
+    if (o.type === 'Process') addPivot('Process Pivot', 'process.name:"' + rawVal + '" OR process.executable:*"' + rawVal + '"*');
+    if (o.type === 'Vault Operation') addPivot('Vault Operation Pivot', 'hashicorp_vault.audit.request.operation:"' + rawVal + '"');
+    if (o.type === 'MITRE Technique' && /^T\d+/i.test(rawVal)) addPivot('MITRE Technique Pivot', 'kibana.alert.rule.threat.technique.id:"' + rawVal + '"');
+  });
+  addPivot('Vault Request Type Pivot', 'hashicorp_vault.audit.type:"request"');
+  addPivot('Vault Success Auth Pivot', 'event.category:"authentication" AND event.outcome:"success"');
+  return pivots;
+}
+
+function copyPivotQuery(index) {
+  var p = triagePivots[index];
+  if (!p) return;
+  navigator.clipboard.writeText(p.query).then(function(){
+    setIntakeSummary('Copied pivot: ' + p.name, false);
+  }).catch(function(){
+    var ta = document.createElement('textarea');
+    ta.value = p.query; document.body.appendChild(ta); ta.select();
+    document.execCommand('copy'); document.body.removeChild(ta);
+    setIntakeSummary('Copied pivot: ' + p.name, false);
+  });
+}
+
+function renderPlaybookGuidancePanel() {
+  var rc = caseState.ruleContext || {};
+  var hasNote = !!(rc.note && rc.note.trim());
+  var html = '';
+  html += '<div class="triage-grid">'
+    + '<div><span class="field-label" style="margin-top:0;">Rule Name</span><div class="triage-note">' + escHtml(rc.name || 'Not available') + '</div></div>'
+    + '<div><span class="field-label" style="margin-top:0;">Severity / Risk</span><div class="triage-note">' + escHtml((rc.severity || 'Unknown') + (rc.riskScore ? ' / ' + rc.riskScore : '')) + '</div></div>'
+    + '</div>';
+  if (rc.description) html += '<div class="triage-note" style="margin-top:8px;"><strong>Description:</strong> ' + escHtml(rc.description) + '</div>';
+  if (rc.query) html += '<div class="triage-note" style="margin-top:6px;"><strong>Query:</strong> ' + escHtml(rc.query) + '</div>';
+  if ((rc.mitreTechniques || []).length || (rc.mitreTactics || []).length) {
+    html += '<div class="triage-note" style="margin-top:6px;"><strong>MITRE:</strong> '
+      + escHtml((rc.mitreTechniques || []).concat(rc.mitreTactics || []).join(', ')) + '</div>';
+  }
+  if (hasNote) html += '<div class="field-label" style="margin-top:10px;">Embedded Playbook / Note</div><div class="triage-scroll">' + escHtml(rc.note) + '</div>';
+  else html += '<div class="triage-note" style="margin-top:8px;">No embedded playbook was found in the alert JSON. Use the checklist and pivots below to continue triage.</div>';
+  document.getElementById('playbook-guidance-content').innerHTML = html;
+}
+
+function renderTriageSupportPanels() {
+  ensureTriageState();
+  populateSelect('triage_verdict', TRIAGE_VERDICTS, caseState.triage.verdict);
+  populateSelect('triage_confidence', TRIAGE_CONFIDENCE, caseState.triage.confidence);
+  populateSelect('triage_recommendedAction', TRIAGE_RECOMMENDED_ACTIONS, caseState.triage.recommendedAction);
+  populateSelect('triage_escalationRequired', TRIAGE_ESCALATION, caseState.triage.escalationRequired);
+  populateSelect('triage_businessImpact', TRIAGE_BUSINESS_IMPACT, caseState.triage.businessImpact);
+  var rationaleEl = document.getElementById('triage_analystRationale');
+  if (rationaleEl && rationaleEl.value !== caseState.triage.analystRationale) rationaleEl.value = caseState.triage.analystRationale || '';
+  syncVerdictRadioFromTriage();
+
+  renderChecklistPanel('evidence-checklist-list', getEvidenceChecklistItems(), 'evidence');
+  renderChecklistPanel('known-good-checks-list', getKnownGoodCheckItems(), 'known');
+  renderPlaybookGuidancePanel();
+
+  triageObservables = buildObservables();
+  document.getElementById('observables-body').innerHTML = triageObservables.map(function(o, i) {
+    return '<tr>'
+      + '<td>' + escHtml(o.type) + '</td>'
+      + '<td>' + escHtml(o.value) + '</td>'
+      + '<td>' + escHtml(o.source) + '</td>'
+      + '<td>' + escHtml(o.context) + '</td>'
+      + '<td><select onchange="onObservableDispositionChangeByIndex(' + i + ',this.value)">'
+      + ['Unknown','Benign','Expected','Suspicious','Malicious','Impacted','Escalated','Blocked'].map(function(opt) {
+          return '<option value="' + escAttr(opt) + '"' + (o.disposition === opt ? ' selected' : '') + '>' + escHtml(opt) + '</option>';
+        }).join('')
+      + '</select></td>'
+      + '</tr>';
+  }).join('') || '<tr><td colspan="5" class="triage-note">No observables extracted yet.</td></tr>';
+
+  triagePivots = buildSuggestedPivotsFromObservables(triageObservables);
+  document.getElementById('pivot-list').innerHTML = triagePivots.map(function(p, i) {
+    return '<div class="pivot-row">'
+      + '<div class="triage-note" style="margin:0;">' + escHtml(p.name) + '</div>'
+      + '<div class="pivot-query">' + escHtml(p.query) + '</div>'
+      + '<button class="btn" style="font-size:10px;padding:4px 10px;" onclick="copyPivotQuery(' + i + ')">Copy</button>'
+      + '</div>';
+  }).join('') || '<div class="triage-note">No suggested pivots available yet.</div>';
+}
+
+function getCheckedTriageItems(kind) {
+  ensureTriageState();
+  var items = kind === 'evidence' ? getEvidenceChecklistItems() : getKnownGoodCheckItems();
+  var map = kind === 'evidence' ? caseState.triage.checklist : caseState.triage.knownGoodChecks;
+  return items.filter(function(label){ return !!map[toItemKey(label)]; });
 }
 
 function normalizeJsonEvent(rawEvent) {
@@ -1784,6 +2271,7 @@ function resetAllSilent() {
   timelineData = []; externalLinks = [];
   caseState.events = [];
   caseState.parsedEventsBuffer = [];
+  caseState.triage = getDefaultTriageState();
   caseState.ruleContext = {
     name: '', description: '', note: '', query: '', severity: '', riskScore: '',
     mitreTechniques: [], mitreTactics: [], references: [], sourceFields: {}
@@ -1791,7 +2279,7 @@ function resetAllSilent() {
   ['raw_input','json_intake_input','impact','tl_desc','link_title','link_url','analysis','summary','report_title','escalate-detail','tune-detail'].forEach(function(id){
     var el = document.getElementById(id); if (el) el.value = '';
   });
-  document.getElementById('v-fp').checked = true;
+  document.getElementById('v-pending').checked = true;
   document.querySelectorAll('input[name="next-step"]').forEach(function(r){ r.checked = false; });
   SECTION_ORDER.forEach(function(id){ setSectionComplete(id, false, true); var body = document.getElementById(id).querySelector('.section-body'); document.getElementById(id).classList.remove('open'); body.style.maxHeight = '0'; body.style.padding = '0 14px'; });
   openSection('sec-alert');
@@ -1801,6 +2289,7 @@ function resetAllSilent() {
   document.getElementById('act-type-row').style.display = 'none';
   document.getElementById('impact-section').style.display = 'none';
   renderTimeline(); renderParsedEventsReview(); renderLinks();
+  renderTriageSupportPanels();
   customFields = []; renderCustomFields();
   document.getElementById('mitre-panel').style.display = 'none';
   document.getElementById('fp-panel').style.display = 'none';
@@ -2221,13 +2710,121 @@ function buildTimelineRowsForReport() {
   });
 }
 
+function getReportObservables() {
+  return triageObservables && triageObservables.length ? triageObservables : buildObservables();
+}
+
+function getReportPivots() {
+  return triagePivots && triagePivots.length ? triagePivots : buildSuggestedPivotsFromObservables(getReportObservables());
+}
+
+function buildMarkdownTriageSections() {
+  ensureTriageState();
+  var md = [];
+  var checkedEvidence = getCheckedTriageItems('evidence');
+  var checkedKnownGood = getCheckedTriageItems('known');
+  var observables = getReportObservables();
+  var pivots = getReportPivots();
+  var rc = caseState.ruleContext || {};
+
+  md.push('', '### 🧭 Triage Decision');
+  md.push('- **Verdict:** ' + (caseState.triage.verdict || 'Pending'));
+  md.push('- **Confidence:** ' + (caseState.triage.confidence || 'Pending'));
+  md.push('- **Recommended Action:** ' + (caseState.triage.recommendedAction || 'Pending'));
+  md.push('- **Escalation Required:** ' + (caseState.triage.escalationRequired || 'Pending'));
+  md.push('- **Business Impact:** ' + (caseState.triage.businessImpact || 'Unknown'));
+  if (caseState.triage.analystRationale && caseState.triage.analystRationale.trim()) md.push('- **Analyst Rationale:** ' + caseState.triage.analystRationale.trim());
+
+  md.push('', '### 🔎 Observables', '', '| Type | Value | Source | Disposition |', '| :--- | :--- | :--- | :--- |');
+  if (observables.length) observables.forEach(function(o){ md.push('| ' + o.type + ' | ' + o.value + ' | ' + o.source + ' | ' + (o.disposition || 'Unknown') + ' |'); });
+  else md.push('| — | _No observables extracted._ | — | Unknown |');
+
+  md.push('', '### ✅ Evidence Reviewed');
+  if (checkedEvidence.length) checkedEvidence.forEach(function(i){ md.push('- ' + i); });
+  else md.push('No evidence checklist items marked complete.');
+
+  md.push('', '### 🟢 Known-Good / False Positive Checks');
+  if (checkedKnownGood.length) checkedKnownGood.forEach(function(i){ md.push('- ' + i); });
+  else md.push('No known-good checks marked complete.');
+
+  md.push('', '### 🧪 Suggested Pivots');
+  if (pivots.length) pivots.slice(0, 12).forEach(function(p){ md.push('- **' + p.name + ':** `' + p.query + '`'); });
+  else md.push('No pivots available.');
+
+  md.push('', '### 🧬 MITRE ATT&CK');
+  var mitreList = uniqValues((rc.mitreTechniques || []).concat(rc.mitreTactics || []));
+  if (mitreList.length) md.push(mitreList.map(function(m){ return '`' + m + '`'; }).join(' '));
+  else md.push('_No MITRE mappings extracted._');
+
+  md.push('', '### 📖 Rule Description / Investigation Notes');
+  if (rc.description) md.push('**Rule Description:** ' + rc.description);
+  else md.push('**Rule Description:** Not available.');
+  md.push('**Embedded Playbook Available:** ' + (rc.note && rc.note.trim() ? 'Yes' : 'No'));
+  if (rc.query) md.push('**Rule Query Available:** Yes');
+  else md.push('**Rule Query Available:** No');
+  return md;
+}
+
+function buildJiraTriageSections() {
+  ensureTriageState();
+  var j = [];
+  var checkedEvidence = getCheckedTriageItems('evidence');
+  var checkedKnownGood = getCheckedTriageItems('known');
+  var observables = getReportObservables();
+  var pivots = getReportPivots();
+  var rc = caseState.ruleContext || {};
+
+  j.push('');
+  j.push('h3. 🧭 Triage Decision');
+  j.push('*Verdict:* ' + (caseState.triage.verdict || 'Pending'));
+  j.push('*Confidence:* ' + (caseState.triage.confidence || 'Pending'));
+  j.push('*Recommended Action:* ' + (caseState.triage.recommendedAction || 'Pending'));
+  j.push('*Escalation Required:* ' + (caseState.triage.escalationRequired || 'Pending'));
+  j.push('*Business Impact:* ' + (caseState.triage.businessImpact || 'Unknown'));
+  if (caseState.triage.analystRationale && caseState.triage.analystRationale.trim()) j.push('*Analyst Rationale:* ' + caseState.triage.analystRationale.trim());
+
+  j.push('');
+  j.push('h3. 🔎 Observables');
+  j.push('|| Type || Value || Source || Disposition ||');
+  if (observables.length) observables.forEach(function(o){ j.push('| ' + o.type + ' | ' + o.value + ' | ' + o.source + ' | ' + (o.disposition || 'Unknown') + ' |'); });
+  else j.push('| — | _No observables extracted._ | — | Unknown |');
+
+  j.push('');
+  j.push('h3. ✅ Evidence Reviewed');
+  if (checkedEvidence.length) checkedEvidence.forEach(function(i){ j.push('* ' + i); });
+  else j.push('No evidence checklist items marked complete.');
+
+  j.push('');
+  j.push('h3. 🟢 Known-Good / False Positive Checks');
+  if (checkedKnownGood.length) checkedKnownGood.forEach(function(i){ j.push('* ' + i); });
+  else j.push('No known-good checks marked complete.');
+
+  j.push('');
+  j.push('h3. 🧪 Suggested Pivots');
+  if (pivots.length) pivots.slice(0, 12).forEach(function(p){ j.push('* *' + p.name + ':* {{' + p.query + '}}'); });
+  else j.push('No pivots available.');
+
+  j.push('');
+  j.push('h3. 🧬 MITRE ATT&CK');
+  var mitreList = uniqValues((rc.mitreTechniques || []).concat(rc.mitreTactics || []));
+  if (mitreList.length) j.push(mitreList.map(function(m){ return '{{' + m + '}}'; }).join(' '));
+  else j.push('_No MITRE mappings extracted._');
+
+  j.push('');
+  j.push('h3. 📖 Rule Description / Investigation Notes');
+  j.push('*Rule Description:* ' + (rc.description || 'Not available.'));
+  j.push('*Embedded Playbook Available:* ' + (rc.note && rc.note.trim() ? 'Yes' : 'No'));
+  j.push('*Rule Query Available:* ' + (rc.query ? 'Yes' : 'No'));
+  return j;
+}
+
 // ── BUILD MARKDOWN ────────────────────────────────────────────────────────────
 function buildMarkdown() {
   var raw      = document.getElementById('raw_input').value;
   var impact   = document.getElementById('impact').value   || '_Not yet provided._';
   var actType  = document.getElementById('act_type').value;
   var analysis = document.getElementById('analysis').value || '_Pending._';
-  var verdict  = document.querySelector('input[name="verdict"]:checked').value;
+  var verdict  = (caseState.triage && caseState.triage.verdict) || document.querySelector('input[name="verdict"]:checked').value;
   var summary  = document.getElementById('summary').value  || '_Not yet provided._';
   var selStepMd = document.querySelector('input[name="next-step"]:checked');
   var stepValMd = selStepMd ? selStepMd.value : '';
@@ -2298,6 +2895,8 @@ function buildMarkdown() {
     }
   }
 
+  md.push.apply(md, buildMarkdownTriageSections());
+
   var timelineRowsMd = buildTimelineRowsForReport();
   md.push('', '### 📅 Timeline', '', '| Time | Category | Event |', '| :--- | :--- | :--- |');
   if (timelineRowsMd.length) timelineRowsMd.forEach(function(e){ md.push('| `'+e.time+'` | '+e.category+' | '+e.event+' |'); });
@@ -2323,7 +2922,7 @@ function buildJira() {
   var impact   = document.getElementById('impact').value   || '_Not yet provided._';
   var actType  = document.getElementById('act_type').value;
   var analysis = document.getElementById('analysis').value || '_Pending._';
-  var verdict  = document.querySelector('input[name="verdict"]:checked').value;
+  var verdict  = (caseState.triage && caseState.triage.verdict) || document.querySelector('input[name="verdict"]:checked').value;
   var summary  = document.getElementById('summary').value  || '_Not yet provided._';
   var selStepJ = document.querySelector('input[name="next-step"]:checked');
   var stepValJ = selStepJ ? selStepJ.value : '';
@@ -2334,7 +2933,14 @@ function buildJira() {
   if (stepValJ === 'tune')     stepLabel2 = 'Suppress alert / Tune rule'   + (tuneDetailJ     ? ' — ' + tuneDetailJ     : '');
   if (stepValJ === 'close')    stepLabel2 = 'Close case';
   var reportTitle = document.getElementById('report_title').value.trim() || extractField(raw, 'kibana.alert.rule.name') || 'Security Incident';
-  var vcIcon   = {Benign:'(/)', 'True Positive':'(!)', 'False Positive':'(/)'}[verdict] || '';
+  var vcIcon   = {
+    'Pending':'(!)',
+    'False Positive':'(/)',
+    'Benign True Positive':'(/)',
+    'Suspicious':'(!)',
+    'True Positive':'(!)',
+    'Escalated':'(!)'
+  }[verdict] || '';
 
   var j = [];
   j.push('h3. 🛡️ '+reportTitle);
@@ -2401,6 +3007,8 @@ function buildJira() {
     }
   }
 
+  j.push.apply(j, buildJiraTriageSections());
+
   j.push('');
   j.push('h3. 📅 Timeline');
   j.push('|| Time || Category || Event ||');
@@ -2432,7 +3040,7 @@ function buildJira() {
 
 // ── RENDER JIRA AS STYLED HTML ────────────────────────────────────────────────
 function jiraToHtml(text) {
-  var vc = {Benign:'green','True Positive':'red','False Positive':'green'};
+  var vc = {'Pending':'orange','False Positive':'green','Benign True Positive':'green','Suspicious':'orange','True Positive':'red','Escalated':'red'};
   var verdict = document.querySelector('input[name="verdict"]:checked').value;
   var vcClass = 'jira-verdict-'+(vc[verdict]||'blue');
 
@@ -2482,7 +3090,7 @@ function jinl(t) {
   t = t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   t = t.replace(/\{\{([^}]+)\}\}/g, '<span class="jira-mono">$1</span>');
   // inline {color:xx}text{color} — map to verdict classes
-  var colorMap = {green:'jira-verdict-green', red:'jira-verdict-red', orange:'jira-verdict-green'};
+  var colorMap = {green:'jira-verdict-green', red:'jira-verdict-red', orange:'jira-verdict-orange'};
   t = t.replace(/\{color:([^}]+)\}(.*?)\{color\}/g, function(_, col, inner) {
     var cls = colorMap[col] || 'jira-verdict-green';
     return '<span class="'+cls+'" style="font-weight:700;">'+inner+'</span>';
@@ -2558,8 +3166,8 @@ function inl(t) {
   t = t.replace(/(^|\s)_([^_\s][^_]*)_(\s|$|[.,;])/g, '$1<em>$2</em>$3');
   t = t.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
   // Colour verdict value in conclusion line
-  var vcMap = {'Benign':'jira-verdict-green','True Positive':'jira-verdict-red','False Positive':'jira-verdict-green'};
-  t = t.replace(/(<strong>Verdict:<\/strong> )(Benign|True Positive|False Positive)/, function(_, prefix, v) {
+  var vcMap = {'Pending':'jira-verdict-orange','False Positive':'jira-verdict-green','Benign True Positive':'jira-verdict-green','Suspicious':'jira-verdict-orange','True Positive':'jira-verdict-red','Escalated':'jira-verdict-red'};
+  t = t.replace(/(<strong>Verdict:<\/strong> )(Pending|False Positive|Benign True Positive|Suspicious|True Positive|Escalated)/, function(_, prefix, v) {
     return prefix + '<span class="'+(vcMap[v]||'')+'">'+v+'</span>';
   });
   return t;
@@ -2568,11 +3176,14 @@ function inl(t) {
 // ── VERDICT CHANGE ───────────────────────────────────────────────────────────
 function onVerdictChange() {
   var verdict = document.querySelector('input[name="verdict"]:checked').value;
+  ensureTriageState();
+  caseState.triage.verdict = verdict;
   var isTP = verdict === 'True Positive';
   // Make sure conclusion section is open when interacting with it
   openSection('sec-conclusion');
   document.getElementById('act-type-row').style.display   = isTP ? 'block' : 'none';
   document.getElementById('impact-section').style.display = isTP ? 'block' : 'none';
+  renderTriageSupportPanels();
   updatePreview();
 }
 
@@ -2876,6 +3487,7 @@ function setFormat(fmt) {
 function updatePreview() {
   var mdEl   = document.getElementById('preview');
   var jiraEl = document.getElementById('jira-raw');
+  renderTriageSupportPanels();
   saveToStorage();
 
   if (currentFormat === 'md') {
@@ -2924,6 +3536,7 @@ function resetKeepJson() {
   timelineData = []; externalLinks = [];
   caseState.events = [];
   caseState.parsedEventsBuffer = [];
+  caseState.triage = getDefaultTriageState();
   caseState.ruleContext = {
     name: '', description: '', note: '', query: '', severity: '', riskScore: '',
     mitreTechniques: [], mitreTactics: [], references: [], sourceFields: {}
@@ -2932,7 +3545,7 @@ function resetKeepJson() {
   ['impact','tl_desc','link_title','link_url','analysis','summary','report_title','escalate-detail','tune-detail'].forEach(function(id){
     document.getElementById(id).value = '';
   });
-  document.getElementById('v-fp').checked = true;
+  document.getElementById('v-pending').checked = true;
   document.querySelectorAll('input[name="next-step"]').forEach(function(r){ r.checked = false; });
   SECTION_ORDER.forEach(function(id){
     setSectionComplete(id, false, true);
@@ -2948,6 +3561,7 @@ function resetKeepJson() {
   document.getElementById('act-type-row').style.display = 'none';
   document.getElementById('impact-section').style.display = 'none';
   renderTimeline(); renderParsedEventsReview(); renderLinks();
+  renderTriageSupportPanels();
   customFields = []; renderCustomFields();
   document.getElementById('mitre-panel').style.display = 'none';
   document.getElementById('fp-panel').style.display = 'none';
@@ -2973,6 +3587,7 @@ function resetAll() {
   timelineData = []; externalLinks = [];
   caseState.events = [];
   caseState.parsedEventsBuffer = [];
+  caseState.triage = getDefaultTriageState();
   caseState.ruleContext = {
     name: '', description: '', note: '', query: '', severity: '', riskScore: '',
     mitreTechniques: [], mitreTactics: [], references: [], sourceFields: {}
@@ -2980,7 +3595,7 @@ function resetAll() {
   ['raw_input','json_intake_input','impact','tl_desc','link_title','link_url','analysis','summary','report_title','escalate-detail','tune-detail'].forEach(function(id){
     document.getElementById(id).value = '';
   });
-  document.getElementById('v-fp').checked = true;
+  document.getElementById('v-pending').checked = true;
   document.querySelectorAll('input[name="next-step"]').forEach(function(r){ r.checked = false; });
   // Reset section states — close all, open only Alert Data
   SECTION_ORDER.forEach(function(id){
@@ -3000,6 +3615,7 @@ function resetAll() {
   document.getElementById('act-type-row').style.display = 'none';
   document.getElementById('impact-section').style.display = 'none';
   renderTimeline(); renderParsedEventsReview(); renderLinks();
+  renderTriageSupportPanels();
   customFields = [];
   renderCustomFields();
   document.getElementById('mitre-panel').style.display = 'none';
@@ -3089,6 +3705,60 @@ function runTimelineParserSmokeTests() {
 
   var passCount = tests.filter(function(t){ return t.pass; }).length;
   console.log('[Timeline Intake Smoke Tests] ' + passCount + '/' + tests.length + ' passed');
+  tests.forEach(function(t){ console.log((t.pass ? 'PASS: ' : 'FAIL: ') + t.name); });
+  return tests;
+}
+
+function runTriageSupportSmokeTests() {
+  var tests = [];
+  function assert(name, condition) { tests.push({ name: name, pass: !!condition }); }
+
+  var backup = {
+    events: JSON.parse(JSON.stringify(caseState.events || [])),
+    triage: JSON.parse(JSON.stringify(caseState.triage || getDefaultTriageState())),
+    ruleContext: JSON.parse(JSON.stringify(caseState.ruleContext || {})),
+    raw: document.getElementById('raw_input').value
+  };
+
+  try {
+    caseState.events = [];
+    caseState.triage = getDefaultTriageState();
+    caseState.ruleContext = { name:'', description:'', note:'', query:'', severity:'', riskScore:'', mitreTechniques:[], mitreTactics:[], references:[], sourceFields:{} };
+    document.getElementById('raw_input').value = '';
+    ensureTriageState();
+    assert('default triage verdict pending', caseState.triage.verdict === 'Pending');
+
+    caseState.events = [
+      normalizeJsonEvent({ fields: { '@timestamp':['2026-05-30T10:00:00Z'], 'user.name':['mitchellt110'], 'source.ip':['25.235.94.26'], 'destination.ip':['203.0.113.20'], 'url.original':['https://www.aidu.mod.uk/files/My-Products-Large.mp4'], 'url.domain':['www.aidu.mod.uk'], 'event.category':['web'] } }),
+      normalizeJsonEvent({ fields: { '@timestamp':['2026-05-30T10:01:00Z'], 'user.name':['mitchellt110'], 'source.ip':['25.235.94.26'], 'destination.ip':['203.0.113.20'], 'url.original':['https://www.aidu.mod.uk/files/My-Products-Large.mp4'], 'url.domain':['www.aidu.mod.uk'], 'event.category':['web'] } }),
+      normalizeJsonEvent({ fields: { '@timestamp':['2026-05-30T10:02:00Z'], 'hashicorp_vault.audit.request.remote_address':['100.64.96.3'], 'hashicorp_vault.audit.request.operation':['read'], 'event.category':['authentication'] } })
+    ];
+
+    var obs = buildObservables();
+    var hasSrc = obs.some(function(o){ return o.type === 'Source IP' && o.value.indexOf('25[.]235[.]94[.]26') !== -1; });
+    var hasDst = obs.some(function(o){ return o.type === 'Destination IP' && o.value.indexOf('203[.]0[.]113[.]20') !== -1; });
+    var hasUrlOrDomain = obs.some(function(o){ return o.type === 'URL' || o.type === 'Domain'; });
+    var hasVaultRemote = obs.some(function(o){ return o.type === 'Source IP' && o.value.indexOf('100[.]64[.]96[.]3') !== -1; });
+    var hasVaultOp = obs.some(function(o){ return o.type === 'Vault Operation' && /read/i.test(o.value); });
+    assert('observables deduped', obs.length < 20);
+    assert('web observables include source/destination/url-domain', hasSrc && hasDst && hasUrlOrDomain);
+    assert('vault observables include remote ip and operation', hasVaultRemote && hasVaultOp);
+
+    var pivots = buildSuggestedPivotsFromObservables(obs);
+    var hasSourcePivot = pivots.some(function(p){ return /source\.ip/i.test(p.query); });
+    var hasUserPivot = pivots.some(function(p){ return /user\.name/i.test(p.query); });
+    assert('pivot generation includes source ip pivot', hasSourcePivot);
+    assert('pivot generation includes user pivot', hasUserPivot);
+  } finally {
+    caseState.events = backup.events;
+    caseState.triage = backup.triage;
+    caseState.ruleContext = backup.ruleContext;
+    document.getElementById('raw_input').value = backup.raw;
+    renderTriageSupportPanels();
+  }
+
+  var passCount = tests.filter(function(t){ return t.pass; }).length;
+  console.log('[Triage Support Smoke Tests] ' + passCount + '/' + tests.length + ' passed');
   tests.forEach(function(t){ console.log((t.pass ? 'PASS: ' : 'FAIL: ') + t.name); });
   return tests;
 }
