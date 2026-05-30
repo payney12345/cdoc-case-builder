@@ -1334,7 +1334,12 @@ function buildLiteEventFromRaw(rawMerged) {
     user: firstValue(rawMerged, ['user.name', 'user.name.text', 'hashicorp_vault.audit.auth.display_name', 'winlog.event_data.TargetUserName', 'winlog.event_data.SubjectUserName']),
     url: firstValue(rawMerged, ['url.original', 'url.full']),
     domain: firstValue(rawMerged, ['url.domain']),
+    processName: firstValue(rawMerged, ['process.name', 'process.executable', 'winlog.event_data.ProcessName', 'winlog.event_data.NewProcessName']),
+    commandLine: firstValue(rawMerged, ['process.command_line', 'winlog.event_data.CommandLine']),
     destinationBytes: firstValue(rawMerged, ['destination.bytes']),
+    bytesIn: firstValue(rawMerged, ['bytes_in', 'source.bytes']),
+    httpMethod: firstValue(rawMerged, ['http.request.method']),
+    httpStatus: firstValue(rawMerged, ['http.response.status_code', 'http.proxy.status_code']),
     sourcePort: firstValue(rawMerged, ['source.port', 'hashicorp_vault.audit.request.remote_port']),
     destinationPort: firstValue(rawMerged, ['destination.port']),
     sourceIp: firstValue(rawMerged, ['source.ip', 'hashicorp_vault.audit.request.remote_address', 'client.ip']),
@@ -2123,7 +2128,7 @@ function buildCaseEntitiesAndObservables() {
     addObservableEntry(observables, observableSeen, 'Domain', e.domain, 'Timeline', 'Domain indicator', true);
     addObservableEntry(observables, observableSeen, 'URL', e.url, 'Timeline', 'Web indicator', true);
     addObservableEntry(observables, observableSeen, 'Process Name', e.processName, 'Timeline', 'Process activity', true);
-    addObservableEntry(observables, observableSeen, 'Process Command Line', e.processName, 'Timeline', 'Process command context', true);
+    addObservableEntry(observables, observableSeen, 'Process Command Line', e.commandLine, 'Timeline', 'Process command context', true);
     addObservableEntry(observables, observableSeen, 'Vault Mount Point', e.vaultMountPoint || e.vaultMountType, 'Timeline', 'Vault mount target', true);
     addObservableEntry(observables, observableSeen, 'Vault Request URI', e.vaultRequestUri, 'Timeline', 'Vault request target', true);
     (e.mitreTechniques || []).forEach(function(t){ addObservableEntry(observables, observableSeen, 'MITRE Technique', t, 'Alert', 'MITRE mapping', true); });
@@ -2284,6 +2289,114 @@ function onTriageAnalysisFieldChange(field, value) {
   updatePreview();
 }
 
+function looksDownloadableFile(url) {
+  var u = String(url || '').toLowerCase();
+  return /\.(zip|rar|7z|iso|img|dmg|exe|msi|ps1|bat|cmd|jar|pdf|docx?|xlsx?|pptx?|csv|json|xml|mp4|mov|avi|mkv|tar|gz)(\?|$)/.test(u);
+}
+
+function toNum(v) {
+  var n = Number(v || 0);
+  return isNaN(n) ? 0 : n;
+}
+
+function getLargestTransferEvent(events) {
+  var best = null;
+  var bestN = -1;
+  (events || []).forEach(function(e) {
+    var n = Math.max(toNum(e.destinationBytes), toNum(e.bytesIn), toNum(e.bytesOut));
+    if (n > bestN) {
+      bestN = n;
+      best = e;
+    }
+  });
+  return best;
+}
+
+function getPrimaryWebDownload(events, rawEv) {
+  var all = (events || []).slice();
+  var rawLite = buildLiteEventFromRaw(rawEv);
+  if (rawLite) all.push(rawLite);
+
+  var best = null;
+  var bestScore = -1;
+  all.forEach(function(e) {
+    var hasUrl = !!(e.url || e.domain);
+    if (!hasUrl) return;
+    var n = Math.max(toNum(e.destinationBytes), toNum(e.bytesIn), toNum(e.bytesOut));
+    var score = 0;
+    if (e.url) score += 10;
+    if (e.domain) score += 5;
+    if (n > 0) score += 1000 + n;
+    if (looksDownloadableFile(e.url)) score += 500;
+    if ((String(e.category || '').toLowerCase().indexOf('web') !== -1)) score += 100;
+    if (score > bestScore) {
+      bestScore = score;
+      best = e;
+    }
+  });
+
+  var largest = getLargestTransferEvent(all) || {};
+  var candidate = best || largest || {};
+  var primaryUrl = candidate.url || '';
+  var primaryDomain = candidate.domain || '';
+  var bytes = Math.max(toNum(candidate.destinationBytes), toNum(candidate.bytesIn), toNum(candidate.bytesOut));
+  if (!bytes) bytes = Math.max(toNum(largest.destinationBytes), toNum(largest.bytesIn), toNum(largest.bytesOut));
+  return {
+    primaryUrl: primaryUrl,
+    primaryDomain: primaryDomain,
+    bytes: bytes ? String(bytes) : 'unknown transfer size',
+    event: candidate
+  };
+}
+
+function getBestProcessCommandLine(events, rawEv) {
+  var rawCmd = firstValue(rawEv || {}, ['process.command_line', 'winlog.event_data.CommandLine']);
+  if (rawCmd) return rawCmd;
+  for (var i = 0; i < (events || []).length; i++) {
+    if (events[i].commandLine) return events[i].commandLine;
+  }
+  return '';
+}
+
+function getBestVaultContext(events, observables, entities, rawEv) {
+  var all = (events || []).slice();
+  var rawLite = buildLiteEventFromRaw(rawEv);
+  if (rawLite) all.push(rawLite);
+  var vaultEvent = all.find(function(e){ return !!(e.vaultOperation || e.vaultMountPoint || e.vaultRequestUri || e.vaultTokenType); }) || {};
+  var op = firstNonEmpty([
+    vaultEvent.vaultOperation,
+    firstValue(rawEv || {}, ['hashicorp_vault.audit.request.operation']),
+    (entities || []).filter(function(e){ return e.type === 'Vault Operation'; }).map(function(e){ return e.value; })[0]
+  ]);
+  var mount = firstNonEmpty([
+    vaultEvent.vaultMountPoint,
+    firstValue(rawEv || {}, ['hashicorp_vault.audit.request.mount_point', 'hashicorp_vault.audit.request.mount_type']),
+    (observables || []).filter(function(o){ return o.type === 'Vault Mount Point'; }).map(function(o){ return o.value; })[0]
+  ]);
+  var req = firstNonEmpty([
+    vaultEvent.vaultRequestUri,
+    firstValue(rawEv || {}, ['hashicorp_vault.audit.request.request_uri']),
+    (observables || []).filter(function(o){ return o.type === 'Vault Request URI'; }).map(function(o){ return o.value; })[0]
+  ]);
+  var remote = firstNonEmpty([
+    vaultEvent.sourceIp,
+    firstValue(rawEv || {}, ['hashicorp_vault.audit.request.remote_address']),
+    (observables || []).filter(function(o){ return o.type === 'Source IP'; }).map(function(o){ return o.value.replace(/\[\.\]/g, '.'); })[0]
+  ]);
+  var tokenType = firstNonEmpty([
+    vaultEvent.vaultTokenType,
+    firstValue(rawEv || {}, ['hashicorp_vault.audit.auth.token_type'])
+  ]);
+  return {
+    operation: op,
+    mountPoint: mount,
+    requestUri: req,
+    remoteIp: remote,
+    tokenType: tokenType,
+    relatedHosts: (vaultEvent.relatedHosts || []).join(', ')
+  };
+}
+
 function getTriageDraftContext() {
   var all = caseState.events.slice();
   var rawEv = getRawAlertEvent();
@@ -2293,30 +2406,44 @@ function getTriageDraftContext() {
   var firstVault = all.find(function(e){ return !!(e.vaultOperation || e.vaultMountPoint || e.vaultRequestUri || e.vaultTokenType); }) || first;
   var firstProc = all.find(function(e){ return !!(e.processName || e.commandLine); }) || first;
   var obs = getReportObservables();
+  var entities = getReportCaseEntities();
+  var primaryWeb = getPrimaryWebDownload(all, rawEv);
+  var vaultCtx = getBestVaultContext(all, obs, entities, rawEv);
+  var bestCmd = getBestProcessCommandLine(all, rawEv);
   var srcIp = firstNonEmpty([firstWeb.sourceIp, firstVault.sourceIp, first.sourceIp]);
   var dstIp = firstNonEmpty([firstWeb.destinationIp, firstProc.destinationIp, first.destinationIp]);
-  var domain = firstNonEmpty([firstWeb.domain, first.domain]);
-  var url = firstNonEmpty([firstWeb.url, first.url]);
-  var bytes = firstNonEmpty([firstWeb.destinationBytes, first.destinationBytes]);
+  var domain = firstNonEmpty([primaryWeb.primaryDomain, firstWeb.domain, first.domain]);
+  var url = firstNonEmpty([primaryWeb.primaryUrl, firstWeb.url, first.url]);
+  var bytes = firstNonEmpty([primaryWeb.bytes, firstWeb.destinationBytes, first.destinationBytes]);
   var host = firstNonEmpty([first.host, first.machineName, firstWeb.host]);
   var user = firstNonEmpty([first.user, firstWeb.user]);
-  var cmd = firstNonEmpty([firstProc.commandLine, first.commandLine]);
+  var cmd = firstNonEmpty([bestCmd, firstProc.commandLine, first.commandLine]);
   var process = firstNonEmpty([firstProc.processName, first.processName]);
-  var operation = firstNonEmpty([firstVault.vaultOperation, first.vaultOperation]);
-  var mount = firstNonEmpty([firstVault.vaultMountPoint, firstVault.vaultMountType]);
-  var reqUri = firstNonEmpty([firstVault.vaultRequestUri]);
-  var remoteIp = firstNonEmpty([firstVault.sourceIp, srcIp]);
+  var operation = firstNonEmpty([vaultCtx.operation, firstVault.vaultOperation, first.vaultOperation]);
+  var mount = firstNonEmpty([vaultCtx.mountPoint, firstVault.vaultMountPoint, firstVault.vaultMountType]);
+  var reqUri = firstNonEmpty([vaultCtx.requestUri, firstVault.vaultRequestUri]);
+  var remoteIp = firstNonEmpty([vaultCtx.remoteIp, firstVault.sourceIp, srcIp]);
   var relatedHosts = (firstVault.relatedHosts || []).join(', ');
+  var urlDefanged = url ? defangUrl(url) : '';
+  var domainDefanged = domain ? defangIfNeeded(domain, 'url.domain') : '';
+  var srcDefanged = srcIp ? defangIp(srcIp) : '';
+  var dstDefanged = dstIp ? defangIp(dstIp) : '';
+  var remoteDefanged = remoteIp ? defangIp(remoteIp) : '';
   return {
     events: all,
     observables: obs,
+    entities: entities,
     ruleName: (caseState.ruleContext && caseState.ruleContext.name) || first.ruleName || '',
     user: user || 'unknown user',
     host: host || 'unknown host',
     sourceIp: srcIp || 'unknown source IP',
+    sourceIpDefanged: srcDefanged || 'unknown source IP',
     destinationIp: dstIp || 'unknown destination IP',
+    destinationIpDefanged: dstDefanged || 'unknown destination IP',
     domain: domain || 'unknown domain',
+    domainDefanged: domainDefanged || 'unknown domain',
     url: url || 'unknown URL',
+    urlDefanged: urlDefanged || 'unknown URL',
     destinationBytes: bytes || 'unknown transfer size',
     process: process || 'unknown process',
     commandLine: cmd || 'command line not available',
@@ -2324,8 +2451,11 @@ function getTriageDraftContext() {
     vaultMount: mount || 'mount not available',
     vaultRequestUri: reqUri || 'request URI not available',
     vaultRemoteIp: remoteIp || 'unknown remote IP',
+    vaultRemoteIpDefanged: remoteDefanged || 'unknown remote IP',
+    vaultTokenType: vaultCtx.tokenType || firstVault.vaultTokenType || '',
     relatedHosts: relatedHosts,
-    mitre: (caseState.ruleContext && caseState.ruleContext.mitreTechniques) || []
+    mitre: (caseState.ruleContext && caseState.ruleContext.mitreTechniques) || [],
+    primaryWeb: primaryWeb
   };
 }
 
@@ -2367,7 +2497,7 @@ function detectTriageScenario() {
 
 function buildWhatHappenedDraft(ctx, scenario) {
   if (scenario === 'web') {
-    var primaryUrl = ctx.url !== 'unknown URL' ? ctx.url : ctx.domain;
+    var primaryUrl = ctx.urlDefanged !== 'unknown URL' ? ctx.urlDefanged : ctx.domainDefanged;
     var domains = ctx.observables.filter(function(o){ return o.type === 'Domain'; }).map(function(o){ return o.value; });
     var files = ctx.observables.filter(function(o){ return o.type === 'File Name / Path'; }).map(function(o){ return o.value; });
     var related = '';
@@ -2379,17 +2509,20 @@ function buildWhatHappenedDraft(ctx, scenario) {
     return 'The alert relates to a Large File Download involving user ' + ctx.user + ' on ' + ctx.host + '. The primary URL was ' + primaryUrl + ', with ' + ctx.destinationBytes + ' bytes transferred.' + related;
   }
   if (scenario === 'vault') {
-    return 'The alert relates to Hashicorp Vault access involving operation ' + ctx.vaultOperation + ' from remote IP ' + ctx.vaultRemoteIp + ' against mount/request path ' + (ctx.vaultRequestUri !== 'request URI not available' ? ctx.vaultRequestUri : ctx.vaultMount) + '.';
+    var pathText = ctx.vaultMount !== 'mount not available' && ctx.vaultRequestUri !== 'request URI not available'
+      ? (ctx.vaultMount + ' / ' + ctx.vaultRequestUri)
+      : (ctx.vaultRequestUri !== 'request URI not available' ? ctx.vaultRequestUri : ctx.vaultMount);
+    return 'The alert relates to Hashicorp Vault access involving operation ' + ctx.vaultOperation + ' from remote IP ' + ctx.vaultRemoteIpDefanged + ' against mount/request path ' + pathText + '.';
   }
   if (scenario === 'process') {
-    return 'The alert relates to process execution on ' + ctx.host + ' by ' + ctx.user + '. ' + ctx.process + ' was executed with ' + ctx.commandLine + ' and related network activity was observed to ' + (ctx.url !== 'unknown URL' ? ctx.url : ctx.destinationIp) + '.';
+    return 'The alert relates to process execution on ' + ctx.host + ' by ' + ctx.user + '. ' + ctx.process + ' was executed with command line ' + ctx.commandLine + ' and related network activity was observed to ' + (ctx.urlDefanged !== 'unknown URL' ? ctx.urlDefanged : ctx.destinationIpDefanged) + '.';
   }
   return 'The alert was reviewed and triage activity has started. Timeline events and primary entities/observables were extracted for analyst validation.';
 }
 
 function buildEvidenceReviewedDraft(ctx, scenario) {
   if (scenario === 'web') return 'Supporting timeline events show authentication/user context, web activity before and after the alert, source/destination IPs, domain/URL, file name/path, and transfer size.';
-  if (scenario === 'vault') return 'Timeline events show Vault request activity, token/service account context, related host, and outcome.';
+  if (scenario === 'vault') return 'Timeline events show Vault request activity, token/service account context, related host, and outcome. Observed remote IP: ' + ctx.vaultRemoteIpDefanged + '.';
   if (scenario === 'process') return 'Timeline events include authentication context, process execution, network activity, and endpoint detection.';
   return 'Timeline and key alert fields were reviewed, and entities/observables were extracted to support additional validation steps.';
 }
@@ -2577,7 +2710,8 @@ function normalizeJsonEvent(rawEvent) {
   var destinationPort = firstValue(event, ['destination.port', 'dst_port']);
   var url = firstValue(event, ['url.original', 'url.full', 'http.request.referrer']);
   var domain = firstValue(event, ['url.domain', 'dst_host']);
-  var processName = firstValue(event, ['process.name', 'process.executable', 'process.command_line', 'winlog.event_data.ProcessName', 'winlog.event_data.NewProcessName']);
+  var processName = firstValue(event, ['process.name', 'process.executable', 'winlog.event_data.ProcessName', 'winlog.event_data.NewProcessName']);
+  var commandLine = firstValue(event, ['process.command_line', 'winlog.event_data.CommandLine']);
   var destinationBytes = firstValue(event, ['destination.bytes']);
   var bytesIn = firstValue(event, ['bytes_in', 'source.bytes']);
   var bytesOut = firstValue(event, ['bytes_out']);
@@ -2630,6 +2764,7 @@ function normalizeJsonEvent(rawEvent) {
     url: url,
     domain: domain,
     processName: processName,
+    commandLine: commandLine,
     ruleName: ruleName,
     severity: severity,
     riskScore: riskScore,
@@ -3462,18 +3597,23 @@ function buildReportGroupedData() {
     if (!dom && !e.url) return;
     var domainDefanged = dom ? defangIfNeeded(dom, 'url.domain') : 'Unknown';
     var key = domainDefanged.toLowerCase();
-    if (!webMap[key]) webMap[key] = { domain: domainDefanged, urls: {}, urlCount: 0, primaryUrl: '', maxBytes: 0, files: {} };
+    if (!webMap[key]) webMap[key] = { domain: domainDefanged, urls: {}, urlCount: 0, primaryUrl: '', maxBytes: 0, files: {}, primaryScore: -1 };
     var row = webMap[key];
     if (e.url) {
       var u = defangUrl(e.url);
       if (!row.urls[u]) row.urls[u] = 0;
       row.urls[u] += 1;
       row.urlCount += 1;
-      if (!row.primaryUrl) row.primaryUrl = u;
       var fileName = String(e.url).split('/').pop();
       if (fileName && fileName.indexOf('.') !== -1) row.files[fileName] = true;
+      var nForPrimary = Math.max(toNum(e.destinationBytes), toNum(e.bytesIn), toNum(e.bytesOut));
+      var pScore = nForPrimary + (looksDownloadableFile(e.url) ? 500000000 : 0) + (String(e.category || '').toLowerCase().indexOf('web') !== -1 ? 1000000 : 0);
+      if (pScore > row.primaryScore) {
+        row.primaryScore = pScore;
+        row.primaryUrl = u;
+      }
     }
-    var n = Number(e.destinationBytes || 0);
+    var n = Math.max(toNum(e.destinationBytes), toNum(e.bytesIn), toNum(e.bytesOut));
     if (!isNaN(n) && n > row.maxBytes) row.maxBytes = n;
   });
 
@@ -4782,6 +4922,16 @@ function runTriageSupportSmokeTests() {
         'url.domain': ['www.aidu.mod.uk'],
         'destination.bytes': [14154825],
         'event.category': ['web']
+      }}),
+      normalizeJsonEvent({ fields: {
+        '@timestamp': ['2026-05-30T10:09:00Z'],
+        'kibana.alert.rule.name': ['Large File Download'],
+        'user.name': ['mitchellt110'],
+        'host.name': ['RUDBU620055'],
+        'url.original': ['https://www.aidu.mod.uk/index.html'],
+        'url.domain': ['www.aidu.mod.uk'],
+        'destination.bytes': [8342],
+        'event.category': ['web']
       }})
     ];
     document.getElementById('raw_input').value = JSON.stringify({ fields: {
@@ -4799,7 +4949,9 @@ function runTriageSupportSmokeTests() {
     generateDraftTriageNotes('overwrite');
     assert('web large-download scenario detection returns web', detectTriageScenario() === 'web');
     assert('web scenario draft generation includes large download context', /Large File Download/i.test(caseState.triageAnalysis.whatHappened || ''));
-    assert('web what happened includes user host url and bytes', /mitchellt110/i.test(caseState.triageAnalysis.whatHappened || '') && /RUDBU620055/i.test(caseState.triageAnalysis.whatHappened || '') && /aidu\.mod\.uk/i.test(caseState.triageAnalysis.whatHappened || '') && /14154825 bytes transferred/i.test(caseState.triageAnalysis.whatHappened || ''));
+    assert('web what happened includes user host url and bytes', /mitchellt110/i.test(caseState.triageAnalysis.whatHappened || '') && /RUDBU620055/i.test(caseState.triageAnalysis.whatHappened || '') && /(aidu\.mod\.uk|aidu\[\.\]mod\[\.\]uk)/i.test(caseState.triageAnalysis.whatHappened || '') && /14154825 bytes transferred/i.test(caseState.triageAnalysis.whatHappened || ''));
+    assert('web what happened prefers large file as primary url', /The primary URL was .*My-Products-Large/i.test(caseState.triageAnalysis.whatHappened || ''));
+    assert('web what happened includes defanged url/domain', /hxxps:\/\//i.test(caseState.triageAnalysis.whatHappened || '') || /\[\.\]/.test(caseState.triageAnalysis.whatHappened || ''));
     assert('web what happened excludes process wording', !/process execution|unknown process|encoded or suspicious script|decode\/validate command/i.test(caseState.triageAnalysis.whatHappened || ''));
     assert('web initial assessment defaults to requires validation', (caseState.triageAnalysis.initialAssessment || '') === 'Requires Validation');
     var webQuestions = document.getElementById('triage-suggested-questions').textContent || '';
@@ -4839,6 +4991,8 @@ function runTriageSupportSmokeTests() {
     onRawChange();
     generateDraftTriageNotes('overwrite');
     assert('vault scenario draft generation includes Vault context', /Hashicorp Vault access/i.test(caseState.triageAnalysis.whatHappened || ''));
+    assert('vault draft does not use unknown placeholders when values exist', !/unknown operation|mount not available/i.test(caseState.triageAnalysis.whatHappened || ''));
+    assert('vault draft includes operation and mount/request values', /operation read/i.test(caseState.triageAnalysis.whatHappened || '') && /secret\/data\/prod/i.test(caseState.triageAnalysis.whatHappened || '') && /\/v1\/secret\/data\/prod\/db/i.test(caseState.triageAnalysis.whatHappened || ''));
     var vaultQuestions = document.getElementById('triage-suggested-questions').textContent || '';
     assert('suggested questions generated for vault scenario', /service account expected/i.test(vaultQuestions));
 
@@ -4870,12 +5024,37 @@ function runTriageSupportSmokeTests() {
     generateDraftTriageNotes('overwrite');
     assert('powershell scenario detection returns process', detectTriageScenario() === 'process');
     assert('powershell scenario draft generation includes process context', /process execution/i.test(caseState.triageAnalysis.whatHappened || ''));
+    assert('powershell draft includes meaningful command line', /EncodedCommand/i.test(caseState.triageAnalysis.whatHappened || ''));
     var processQuestions = document.getElementById('triage-suggested-questions').textContent || '';
     assert('suggested questions generated for process scenario', /encoded or obfuscated/i.test(processQuestions));
 
     caseState.triage.includeAnalystAidSections = false;
     caseState.triage.recommendedAction = 'Pending';
     caseState.triage.confidence = 'Pending';
+    caseState.events = [
+      normalizeJsonEvent({ fields: {
+        '@timestamp': ['2026-05-30T10:10:00Z'],
+        'kibana.alert.rule.name': ['Large File Download'],
+        'user.name': ['mitchellt110'],
+        'host.name': ['RUDBU620055'],
+        'url.original': ['https://www.aidu.mod.uk/files/My-Products-Large.mp4'],
+        'url.domain': ['www.aidu.mod.uk'],
+        'destination.bytes': [14154825],
+        'event.category': ['web']
+      }}),
+      normalizeJsonEvent({ fields: {
+        '@timestamp': ['2026-05-30T10:20:00Z'],
+        'kibana.alert.rule.name': ['Suspicious Encoded PowerShell With Network Connection'],
+        'host.name': ['FINANCE-LAPTOP-07'],
+        'user.name': ['a.wilson'],
+        'process.name': ['powershell.exe'],
+        'process.command_line': ['powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand SQBFAFgA...'],
+        'destination.ip': ['203.0.113.44'],
+        'url.original': ['https://example-malware-test.com/payload.ps1'],
+        'kibana.alert.rule.threat.technique.id': ['T1059']
+      }})
+    ];
+    caseState.rawEvent = caseState.events[0];
     renderTriageAutomationPanels();
     var missingPointsText = document.getElementById('triage-missing-points').textContent || '';
     assert('missing triage points include recommended action pending', missingPointsText.indexOf('Recommended Action is still Pending.') !== -1);
@@ -4909,6 +5088,8 @@ function runTriageSupportSmokeTests() {
     var mdConBody = mdConStart !== -1 ? mdDefault.slice(mdConStart) : '';
     assert('markdown conclusion includes decision fields', mdConBody.indexOf('**Verdict:**') !== -1 && mdConBody.indexOf('**Confidence:**') !== -1 && mdConBody.indexOf('**Recommended Action:**') !== -1 && mdConBody.indexOf('**Escalation Required:**') !== -1 && mdConBody.indexOf('**Business Impact:**') !== -1);
     assert('markdown conclusion verdict follows summary selection', mdConBody.indexOf('**Verdict:** True Positive') !== -1);
+    assert('markdown grouped process activity includes command-line detail', /\*\*Command Line:\*\* .*EncodedCommand/i.test(mdDefault));
+    assert('markdown grouped web activity primary url prefers large transfer file', /My-Products-Large\[\.\]mp4/i.test(mdDefault));
 
     var jTriStart = jiraDefault.indexOf('h3. 🔍 Triage & Analysis');
     var jConStart = jiraDefault.indexOf('h3. 🏁 Conclusion');
