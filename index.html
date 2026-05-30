@@ -1077,6 +1077,26 @@ No prior alerts on this host in the last 30 days. The destination port 4444 is c
 var timelineData = [];
 var externalLinks = [];
 var customFields  = [];
+
+function getDefaultRuleContext() {
+  return {
+    name: '',
+    description: '',
+    note: '',
+    query: '',
+    severity: '',
+    riskScore: '',
+    mitreTechniques: [],
+    mitreTactics: [],
+    references: [],
+    sourceFields: {}
+  };
+}
+
+function resetRuleContext() {
+  caseState.ruleContext = getDefaultRuleContext();
+}
+
 // caseState keeps multi-event timeline intake data isolated from legacy fields.
 var caseState = {
   events: [],
@@ -1093,18 +1113,7 @@ var caseState = {
     knownGoodChecks: {},
     observableDispositions: {}
   },
-  ruleContext: {
-    name: '',
-    description: '',
-    note: '',
-    query: '',
-    severity: '',
-    riskScore: '',
-    mitreTechniques: [],
-    mitreTactics: [],
-    references: [],
-    sourceFields: {}
-  }
+  ruleContext: getDefaultRuleContext()
 };
 var SECTION_ORDER = ['sec-alert', 'sec-timeline', 'sec-triage', 'sec-conclusion'];
 var currentFormat = 'md';
@@ -1620,16 +1629,22 @@ function extractRuleContext(rawEvent, event) {
   return ctx;
 }
 
-function mergeRuleContext(nextCtx) {
+function mergeRuleContext(nextCtx, replaceExisting) {
   if (!nextCtx) return;
-  var target = caseState.ruleContext || {};
+  var target = replaceExisting ? getDefaultRuleContext() : (caseState.ruleContext || getDefaultRuleContext());
   ['name', 'description', 'note', 'query', 'severity', 'riskScore'].forEach(function(k) {
-    if (!target[k] && nextCtx[k]) target[k] = nextCtx[k];
+    if (nextCtx[k]) target[k] = nextCtx[k];
   });
-  target.mitreTechniques = uniqValues((target.mitreTechniques || []).concat(nextCtx.mitreTechniques || []));
-  target.mitreTactics = uniqValues((target.mitreTactics || []).concat(nextCtx.mitreTactics || []));
-  target.references = uniqValues((target.references || []).concat(nextCtx.references || []));
-  target.sourceFields = target.sourceFields || {};
+  target.mitreTechniques = replaceExisting
+    ? uniqValues((nextCtx.mitreTechniques || []).slice())
+    : uniqValues((target.mitreTechniques || []).concat(nextCtx.mitreTechniques || []));
+  target.mitreTactics = replaceExisting
+    ? uniqValues((nextCtx.mitreTactics || []).slice())
+    : uniqValues((target.mitreTactics || []).concat(nextCtx.mitreTactics || []));
+  target.references = replaceExisting
+    ? uniqValues((nextCtx.references || []).slice())
+    : uniqValues((target.references || []).concat(nextCtx.references || []));
+  target.sourceFields = replaceExisting ? {} : (target.sourceFields || {});
   Object.keys(nextCtx.sourceFields || {}).forEach(function(k) { target.sourceFields[k] = nextCtx.sourceFields[k]; });
   caseState.ruleContext = target;
 }
@@ -2425,10 +2440,7 @@ function resetAllSilent() {
   caseState.events = [];
   caseState.parsedEventsBuffer = [];
   caseState.triage = getDefaultTriageState();
-  caseState.ruleContext = {
-    name: '', description: '', note: '', query: '', severity: '', riskScore: '',
-    mitreTechniques: [], mitreTactics: [], references: [], sourceFields: {}
-  };
+  resetRuleContext();
   ['raw_input','json_intake_input','impact','tl_desc','link_title','link_url','analysis','summary','report_title','escalate-detail','tune-detail'].forEach(function(id){
     var el = document.getElementById(id); if (el) el.value = '';
   });
@@ -2485,7 +2497,9 @@ function onRawChange() {
     var rawObj = parseJsonSafe(raw);
     if (rawObj && typeof rawObj === 'object') {
       var rawEventObj = unwrapEventDocument(rawObj);
-      mergeRuleContext(extractRuleContext(rawObj, rawEventObj));
+      mergeRuleContext(extractRuleContext(rawObj, rawEventObj), true);
+    } else {
+      resetRuleContext();
     }
     var alertTs   = extractField(raw, 'kibana.alert.original_time');
     var eventTs   = extractField(raw, '@timestamp');
@@ -2512,6 +2526,7 @@ function onRawChange() {
     var autoTitle = ruleName || (ts ? 'Incident — '+ts.split('T')[0] : 'Security Incident');
     if (!titleEl._userEdited) titleEl.value = autoTitle;
   } else {
+    resetRuleContext();
     customFields = [];
   renderCustomFields();
   document.getElementById('mitre-panel').style.display = 'none';
@@ -2784,7 +2799,7 @@ function renderRuleDescPanel(raw) {
   // Store query context for future triage support even though no dedicated UI panel yet.
   if (parsedEvent) {
     var q = firstValue(parsedEvent, ['kibana.alert.rule.parameters[0].query', 'signal.rule.query', 'rule.query']);
-    if (q && !caseState.ruleContext.query) caseState.ruleContext.query = q;
+    caseState.ruleContext.query = q || '';
   }
 }
 
@@ -2882,48 +2897,264 @@ function shouldIncludeAnalystAidInReport() {
   return !!caseState.triage.includeAnalystAidSections;
 }
 
-function buildMarkdownCaseEntitiesSection() {
-  var lines = [];
+function buildReportGroupedData() {
   var entities = getReportCaseEntities();
   var observables = getReportObservables();
+  var rawEv = getRawAlertEvent();
+  var all = caseState.events.slice();
+  if (rawEv) all.push(normalizeJsonEvent(rawEv));
+
+  var dispMap = {};
+  observables.forEach(function(o) {
+    var d = o.disposition || 'Unknown';
+    if (d !== 'Unknown') dispMap[o.type + '|' + o.value] = d;
+  });
+
+  function withDisp(type, value) {
+    var key = type + '|' + value;
+    return dispMap[key] ? (value + ' (' + dispMap[key] + ')') : value;
+  }
+
+  function uniqStrings(values) {
+    var seen = {};
+    var out = [];
+    values.forEach(function(v) {
+      var s = String(v || '').trim();
+      if (!s || seen[s]) return;
+      seen[s] = true;
+      out.push(s);
+    });
+    return out;
+  }
+
+  function entityVals(type) {
+    var preferred = entities.filter(function(e) { return e.type === type && e.source !== 'Rule Context'; }).map(function(e){ return e.value; });
+    var fallback = entities.filter(function(e) { return e.type === type && e.source === 'Rule Context'; }).map(function(e){ return e.value; });
+    return uniqStrings(preferred.length ? preferred : fallback);
+  }
+
+  function obsVals(type) {
+    return uniqStrings(observables.filter(function(o){ return o.type === type; }).map(function(o){ return withDisp(type, o.value); }));
+  }
+
+  function domainFromUrl(url) {
+    var m = String(url || '').replace(/^hxxps?:\/\//i, '').replace(/^https?:\/\//i, '').match(/^([^\/]+)/);
+    return m ? m[1] : '';
+  }
+
+  var webMap = {};
+  all.forEach(function(e) {
+    var dom = e.domain || domainFromUrl(e.url);
+    if (!dom && !e.url) return;
+    var domainDefanged = dom ? defangIfNeeded(dom, 'url.domain') : 'Unknown';
+    var key = domainDefanged.toLowerCase();
+    if (!webMap[key]) webMap[key] = { domain: domainDefanged, urls: {}, urlCount: 0, primaryUrl: '', maxBytes: 0, files: {} };
+    var row = webMap[key];
+    if (e.url) {
+      var u = defangUrl(e.url);
+      if (!row.urls[u]) row.urls[u] = 0;
+      row.urls[u] += 1;
+      row.urlCount += 1;
+      if (!row.primaryUrl) row.primaryUrl = u;
+      var fileName = String(e.url).split('/').pop();
+      if (fileName && fileName.indexOf('.') !== -1) row.files[fileName] = true;
+    }
+    var n = Number(e.destinationBytes || 0);
+    if (!isNaN(n) && n > row.maxBytes) row.maxBytes = n;
+  });
+
+  return {
+    caseContext: {
+      users: entityVals('User'),
+      hosts: entityVals('Host / UAD'),
+      sites: entityVals('Site / Unit'),
+      rules: entityVals('Rule'),
+      severities: entityVals('Severity'),
+      riskScores: entityVals('Risk Score')
+    },
+    network: {
+      sourceIps: obsVals('Source IP'),
+      destinationIps: obsVals('Destination IP'),
+      sourcePorts: uniqStrings(all.map(function(e){ return e.sourcePort; })),
+      destinationPorts: uniqStrings(all.map(function(e){ return e.destinationPort; })),
+      remoteIps: uniqStrings(all.filter(function(e){ return !!(e.vaultOperation || e.vaultMountPoint || e.vaultRequestUri || e.vaultTokenType); }).map(function(e){ return e.sourceIp ? defangIp(e.sourceIp) : ''; }))
+    },
+    webRows: Object.keys(webMap).map(function(k){
+      var w = webMap[k];
+      var files = Object.keys(w.files);
+      return {
+        domain: w.domain,
+        urlCount: w.urlCount,
+        primaryUrl: w.primaryUrl || '—',
+        maxBytes: w.maxBytes ? String(w.maxBytes) : '—',
+        files: files.length ? files.join(', ') : '—'
+      };
+    }),
+    files: {
+      filePaths: obsVals('File Name / Path'),
+      hashes: obsVals('Hash')
+    },
+    process: {
+      processNames: obsVals('Process Name'),
+      commands: obsVals('Process Command Line')
+    },
+    vault: {
+      operations: entityVals('Vault Operation'),
+      mountPoints: obsVals('Vault Mount Point'),
+      requestUris: obsVals('Vault Request URI'),
+      tokenTypes: entityVals('Vault Token Type'),
+      remoteIps: uniqStrings(all.filter(function(e){ return !!(e.vaultOperation || e.vaultMountPoint || e.vaultRequestUri || e.vaultTokenType); }).map(function(e){ return e.sourceIp ? withDisp('Source IP', defangIp(e.sourceIp)) : ''; })),
+      relatedHosts: uniqStrings(all.filter(function(e){ return !!(e.vaultOperation || e.vaultMountPoint || e.vaultRequestUri || e.vaultTokenType); }).reduce(function(acc, e){ return acc.concat(e.relatedHosts || []); }, []))
+    },
+    mitre: {
+      techniques: uniqStrings(obsVals('MITRE Technique').concat((caseState.ruleContext.mitreTechniques || []))),
+      tactics: uniqStrings(caseState.ruleContext.mitreTactics || [])
+    }
+  };
+}
+
+function buildMarkdownCaseEntitiesSection() {
+  var lines = [];
+  var g = buildReportGroupedData();
+  function pushList(title, values) {
+    if (!values.length) return;
+    lines.push('', '**' + title + ':** ' + values.join(', '));
+  }
+
   lines.push('', '### 🧩 Case Entities / Observables');
-  lines.push('', '| Type | Value | Source | Notes |', '| :--- | :--- | :--- | :--- |');
-  if (entities.length) {
-    entities.forEach(function(e) {
-      lines.push('| ' + e.type + ' | ' + e.value + ' | ' + e.source + ' | Context: ' + (e.context || '—') + ' |');
+
+  if (g.caseContext.users.length || g.caseContext.hosts.length || g.caseContext.sites.length || g.caseContext.rules.length || g.caseContext.severities.length || g.caseContext.riskScores.length) {
+    lines.push('', '#### Case Context');
+    pushList('User', g.caseContext.users);
+    pushList('Host / UAD', g.caseContext.hosts);
+    pushList('Site / Unit', g.caseContext.sites);
+    pushList('Rule', g.caseContext.rules);
+    pushList('Severity', g.caseContext.severities);
+    pushList('Risk Score', g.caseContext.riskScores);
+  }
+
+  if (g.network.sourceIps.length || g.network.destinationIps.length || g.network.remoteIps.length || g.network.sourcePorts.length || g.network.destinationPorts.length) {
+    lines.push('', '#### Network Indicators');
+    pushList('Source IP', g.network.sourceIps);
+    pushList('Destination IP', g.network.destinationIps);
+    pushList('Remote IP', g.network.remoteIps);
+    if (g.network.sourcePorts.length) pushList('Source Port', g.network.sourcePorts.slice(0, 8));
+    if (g.network.destinationPorts.length) pushList('Destination Port', g.network.destinationPorts.slice(0, 8));
+  }
+
+  if (g.webRows.length) {
+    lines.push('', '#### Web / HTTP Activity', '', '| Domain | URL/Request Count | Primary URL | Largest Transfer | File Name/Path |', '| :--- | :--- | :--- | :--- | :--- |');
+    g.webRows.forEach(function(w) {
+      lines.push('| ' + w.domain + ' | ' + (w.urlCount || 0) + ' | ' + w.primaryUrl + ' | ' + w.maxBytes + ' | ' + w.files + ' |');
     });
   }
-  if (observables.length) {
-    observables.forEach(function(o) {
-      var note = 'Context: ' + (o.context || '—');
-      if (o.disposition && o.disposition !== 'Unknown') note += '; Disposition: ' + o.disposition;
-      lines.push('| ' + o.type + ' | ' + o.value + ' | ' + o.source + ' | ' + note + ' |');
-    });
+
+  if (g.files.filePaths.length || g.files.hashes.length) {
+    lines.push('', '#### File / Path Artifacts');
+    pushList('File Name/Path', g.files.filePaths);
+    pushList('Hash', g.files.hashes);
   }
-  if (!entities.length && !observables.length) lines.push('| — | _No case entities or observables extracted._ | — | — |');
+
+  if (g.process.processNames.length || g.process.commands.length) {
+    lines.push('', '#### Process Activity');
+    pushList('Process Name', g.process.processNames);
+    pushList('Command Line', g.process.commands);
+  }
+
+  if (g.vault.operations.length || g.vault.mountPoints.length || g.vault.requestUris.length || g.vault.tokenTypes.length || g.vault.remoteIps.length || g.vault.relatedHosts.length) {
+    lines.push('', '#### Vault Activity');
+    pushList('Vault Operation', g.vault.operations);
+    pushList('Vault Mount Point', g.vault.mountPoints);
+    pushList('Vault Request URI', g.vault.requestUris);
+    pushList('Token Type', g.vault.tokenTypes);
+    pushList('Remote IP', g.vault.remoteIps);
+    pushList('Related Host', g.vault.relatedHosts);
+  }
+
+  if (g.mitre.techniques.length || g.mitre.tactics.length) {
+    lines.push('', '#### MITRE Mapping');
+    pushList('Technique', g.mitre.techniques);
+    pushList('Tactic', g.mitre.tactics);
+  }
+
+  if (lines.length <= 2) lines.push('', '_No case entities or observables extracted._');
   return lines;
 }
 
 function buildJiraCaseEntitiesSection() {
   var lines = [];
-  var entities = getReportCaseEntities();
-  var observables = getReportObservables();
+  var g = buildReportGroupedData();
+  function pushList(title, values) {
+    if (!values.length) return;
+    lines.push('*' + title + ':* ' + values.join(', '));
+  }
+
   lines.push('');
   lines.push('h3. 🧩 Case Entities / Observables');
-  lines.push('|| Type || Value || Source || Notes ||');
-  if (entities.length) {
-    entities.forEach(function(e) {
-      lines.push('| ' + e.type + ' | ' + e.value + ' | ' + e.source + ' | Context: ' + (e.context || '—') + ' |');
+
+  if (g.caseContext.users.length || g.caseContext.hosts.length || g.caseContext.sites.length || g.caseContext.rules.length || g.caseContext.severities.length || g.caseContext.riskScores.length) {
+    lines.push('');
+    lines.push('h4. Case Context');
+    pushList('User', g.caseContext.users);
+    pushList('Host / UAD', g.caseContext.hosts);
+    pushList('Site / Unit', g.caseContext.sites);
+    pushList('Rule', g.caseContext.rules);
+    pushList('Severity', g.caseContext.severities);
+    pushList('Risk Score', g.caseContext.riskScores);
+  }
+
+  if (g.network.sourceIps.length || g.network.destinationIps.length || g.network.remoteIps.length || g.network.sourcePorts.length || g.network.destinationPorts.length) {
+    lines.push('');
+    lines.push('h4. Network Indicators');
+    pushList('Source IP', g.network.sourceIps);
+    pushList('Destination IP', g.network.destinationIps);
+    pushList('Remote IP', g.network.remoteIps);
+    if (g.network.sourcePorts.length) pushList('Source Port', g.network.sourcePorts.slice(0, 8));
+    if (g.network.destinationPorts.length) pushList('Destination Port', g.network.destinationPorts.slice(0, 8));
+  }
+
+  if (g.webRows.length) {
+    lines.push('');
+    lines.push('h4. Web / HTTP Activity');
+    lines.push('|| Domain || URL/Request Count || Primary URL || Largest Transfer || File Name/Path ||');
+    g.webRows.forEach(function(w) {
+      lines.push('| ' + w.domain + ' | ' + (w.urlCount || 0) + ' | ' + w.primaryUrl + ' | ' + w.maxBytes + ' | ' + w.files + ' |');
     });
   }
-  if (observables.length) {
-    observables.forEach(function(o) {
-      var note = 'Context: ' + (o.context || '—');
-      if (o.disposition && o.disposition !== 'Unknown') note += '; Disposition: ' + o.disposition;
-      lines.push('| ' + o.type + ' | ' + o.value + ' | ' + o.source + ' | ' + note + ' |');
-    });
+
+  if (g.files.filePaths.length || g.files.hashes.length) {
+    lines.push('');
+    lines.push('h4. File / Path Artifacts');
+    pushList('File Name/Path', g.files.filePaths);
+    pushList('Hash', g.files.hashes);
   }
-  if (!entities.length && !observables.length) lines.push('| — | _No case entities or observables extracted._ | — | — |');
+
+  if (g.process.processNames.length || g.process.commands.length) {
+    lines.push('');
+    lines.push('h4. Process Activity');
+    pushList('Process Name', g.process.processNames);
+    pushList('Command Line', g.process.commands);
+  }
+
+  if (g.vault.operations.length || g.vault.mountPoints.length || g.vault.requestUris.length || g.vault.tokenTypes.length || g.vault.remoteIps.length || g.vault.relatedHosts.length) {
+    lines.push('');
+    lines.push('h4. Vault Activity');
+    pushList('Vault Operation', g.vault.operations);
+    pushList('Vault Mount Point', g.vault.mountPoints);
+    pushList('Vault Request URI', g.vault.requestUris);
+    pushList('Token Type', g.vault.tokenTypes);
+    pushList('Remote IP', g.vault.remoteIps);
+    pushList('Related Host', g.vault.relatedHosts);
+  }
+
+  if (g.mitre.techniques.length || g.mitre.tactics.length) {
+    lines.push('');
+    lines.push('h4. MITRE Mapping');
+    pushList('Technique', g.mitre.techniques);
+    pushList('Tactic', g.mitre.tactics);
+  }
+
+  if (lines.length <= 2) lines.push('_No case entities or observables extracted._');
   return lines;
 }
 
@@ -3727,10 +3958,7 @@ function resetKeepJson() {
   caseState.events = [];
   caseState.parsedEventsBuffer = [];
   caseState.triage = getDefaultTriageState();
-  caseState.ruleContext = {
-    name: '', description: '', note: '', query: '', severity: '', riskScore: '',
-    mitreTechniques: [], mitreTactics: [], references: [], sourceFields: {}
-  };
+  resetRuleContext();
   document.getElementById('json_intake_input').value = '';
   ['impact','tl_desc','link_title','link_url','analysis','summary','report_title','escalate-detail','tune-detail'].forEach(function(id){
     document.getElementById(id).value = '';
@@ -3778,10 +4006,7 @@ function resetAll() {
   caseState.events = [];
   caseState.parsedEventsBuffer = [];
   caseState.triage = getDefaultTriageState();
-  caseState.ruleContext = {
-    name: '', description: '', note: '', query: '', severity: '', riskScore: '',
-    mitreTechniques: [], mitreTactics: [], references: [], sourceFields: {}
-  };
+  resetRuleContext();
   ['raw_input','json_intake_input','impact','tl_desc','link_title','link_url','analysis','summary','report_title','escalate-detail','tune-detail'].forEach(function(id){
     document.getElementById(id).value = '';
   });
@@ -3913,7 +4138,7 @@ function runTriageSupportSmokeTests() {
   try {
     caseState.events = [];
     caseState.triage = getDefaultTriageState();
-    caseState.ruleContext = { name:'', description:'', note:'', query:'', severity:'', riskScore:'', mitreTechniques:[], mitreTactics:[], references:[], sourceFields:{} };
+    caseState.ruleContext = getDefaultRuleContext();
     document.getElementById('raw_input').value = '';
     ensureTriageState();
     assert('default triage verdict pending', caseState.triage.verdict === 'Pending');
@@ -3924,6 +4149,32 @@ function runTriageSupportSmokeTests() {
       normalizeJsonEvent({ fields: { '@timestamp':['2026-05-30T10:01:00Z'], 'user.name':['mitchellt110'], 'source.ip':['25.235.94.26'], 'destination.ip':['203.0.113.20'], 'url.original':['https://www.aidu.mod.uk/files/My-Products-Large.mp4'], 'url.domain':['www.aidu.mod.uk'], 'event.category':['web'] } }),
       normalizeJsonEvent({ fields: { '@timestamp':['2026-05-30T10:02:00Z'], 'hashicorp_vault.audit.request.remote_address':['100.64.96.3'], 'hashicorp_vault.audit.request.operation':['read'], 'hashicorp_vault.audit.request.mount_point':['secret/data/prod'], 'hashicorp_vault.audit.request.request_uri':['/v1/secret/data/prod/db'], 'event.category':['authentication'] } })
     ];
+
+    caseState.ruleContext = {
+      name: 'Vault stale rule',
+      description: '',
+      note: '',
+      query: '',
+      severity: 'high',
+      riskScore: '99',
+      mitreTechniques: ['T1555'],
+      mitreTactics: [],
+      references: [],
+      sourceFields: {}
+    };
+    document.getElementById('raw_input').value = JSON.stringify({
+      fields: {
+        '@timestamp': ['2026-05-30T10:05:00Z'],
+        'kibana.alert.rule.name': ['Large File Download'],
+        'kibana.alert.severity': ['medium'],
+        'kibana.alert.risk_score': [47],
+        'kibana.alert.rule.threat.technique.id': ['T1189', 'T1195', 'T1105']
+      }
+    });
+    onRawChange();
+    assert('raw alert replaces stale ruleContext severity', String(caseState.ruleContext.severity || '').toLowerCase() === 'medium');
+    assert('raw alert replaces stale ruleContext risk score', String(caseState.ruleContext.riskScore || '') === '47');
+    assert('raw alert replaces stale ruleContext mitre', (caseState.ruleContext.mitreTechniques || []).indexOf('T1555') === -1 && (caseState.ruleContext.mitreTechniques || []).indexOf('T1189') !== -1);
 
     var authSummary = caseState.events[0].analystSummary || '';
     assert('non-vault auth summary does not use vault wording', authSummary.indexOf('Hashicorp Vault') === -1);
@@ -3964,6 +4215,9 @@ function runTriageSupportSmokeTests() {
     assert('default markdown excludes evidence section', mdDefault.indexOf('### ✅ Evidence Reviewed') === -1);
     assert('default markdown excludes suggested pivots section', mdDefault.indexOf('### 🧪 Suggested Pivots') === -1);
     assert('default markdown includes compact entities section', mdDefault.indexOf('### 🧩 Case Entities / Observables') !== -1);
+    assert('default markdown uses grouped case context section', mdDefault.indexOf('#### Case Context') !== -1);
+    assert('default markdown uses grouped web activity section', mdDefault.indexOf('#### Web / HTTP Activity') !== -1);
+    assert('default markdown no longer uses flat entities table', mdDefault.indexOf('| Type | Value | Source | Notes |') === -1);
 
     caseState.triage.includeAnalystAidSections = true;
     var mdWithAid = buildMarkdown();
