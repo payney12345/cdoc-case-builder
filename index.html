@@ -848,12 +848,8 @@ No prior alerts on this host in the last 30 days. The destination port 4444 is c
         </div></div>
 
         <div class="triage-panel" id="triage-decision-panel">
-          <div class="triage-panel-title">Triage Decision Support</div>
+          <div class="triage-panel-title">Triage Assessment Support</div>
           <div class="triage-grid-3">
-            <div>
-              <label class="field-label" style="margin-top:0;">Final Verdict</label>
-              <select id="triage_verdict" onchange="onTriageFieldChange('verdict', this.value)"></select>
-            </div>
             <div>
               <label class="field-label" style="margin-top:0;">Confidence</label>
               <select id="triage_confidence" onchange="onTriageFieldChange('confidence', this.value)"></select>
@@ -1385,7 +1381,8 @@ function renderTriageDecisionWarnings() {
   var box = document.getElementById('triage-decision-warnings');
   if (!box) return;
   var t = caseState.triage || {};
-  var verdict = t.verdict || 'Pending';
+  var verdictEl = document.querySelector('input[name="verdict"]:checked');
+  var verdict = (verdictEl && verdictEl.value) || t.verdict || 'Pending';
   if (verdict === 'Pending') {
     box.style.display = 'none';
     box.innerHTML = '';
@@ -1521,6 +1518,7 @@ function loadFromStorage() {
     if (savedTitle) { var te = document.getElementById('report_title'); te.value = savedTitle; te._userEdited = localStorage.getItem('soc_title_edited') === '1'; }
     caseState.lastAutoTitle = localStorage.getItem('soc_last_auto_title') || '';
     var verdict = localStorage.getItem('soc_verdict');
+    if (!verdict && caseState.triage && caseState.triage.verdict) verdict = caseState.triage.verdict;
     if (verdict) { var r = document.querySelector('input[name="verdict"][value="'+verdict+'"]'); if(r) r.checked = true; }
     else document.getElementById('v-pending').checked = true;
     var tl = localStorage.getItem('soc_timeline'); if (tl) timelineData = JSON.parse(tl);
@@ -1529,6 +1527,7 @@ function loadFromStorage() {
     var tr = localStorage.getItem('soc_triage'); if (tr) caseState.triage = JSON.parse(tr);
     var rc = localStorage.getItem('soc_rule_context'); if (rc) caseState.ruleContext = JSON.parse(rc);
     ensureTriageState();
+    syncTriageVerdictFromRadio();
     var lk = localStorage.getItem('soc_links');    if (lk) externalLinks = JSON.parse(lk);
     var stepsRaw = localStorage.getItem('soc_steps');
     if (stepsRaw) {
@@ -1962,6 +1961,12 @@ function syncVerdictRadioFromTriage() {
   if (radio) radio.checked = true;
 }
 
+function syncTriageVerdictFromRadio() {
+  ensureTriageState();
+  var verdictEl = document.querySelector('input[name="verdict"]:checked');
+  caseState.triage.verdict = (verdictEl && verdictEl.value) || caseState.triage.verdict || 'Pending';
+}
+
 function onTriageFieldChange(field, value) {
   ensureTriageState();
   caseState.triage[field] = value;
@@ -2128,7 +2133,7 @@ function renderPlaybookGuidancePanel() {
 
 function renderTriageSupportPanels() {
   ensureTriageState();
-  populateSelect('triage_verdict', TRIAGE_VERDICTS, caseState.triage.verdict);
+  syncTriageVerdictFromRadio();
   populateSelect('triage_confidence', TRIAGE_CONFIDENCE, caseState.triage.confidence);
   populateSelect('triage_recommendedAction', TRIAGE_RECOMMENDED_ACTIONS, caseState.triage.recommendedAction);
   populateSelect('triage_escalationRequired', TRIAGE_ESCALATION, caseState.triage.escalationRequired);
@@ -2137,7 +2142,6 @@ function renderTriageSupportPanels() {
   if (rationaleEl && rationaleEl.value !== caseState.triage.analystRationale) rationaleEl.value = caseState.triage.analystRationale || '';
   var includeAidEl = document.getElementById('triage_includeAnalystAid');
   if (includeAidEl) includeAidEl.checked = !!caseState.triage.includeAnalystAidSections;
-  syncVerdictRadioFromTriage();
   renderTriageDecisionWarnings();
 
   renderChecklistPanel('evidence-checklist-list', getEvidenceChecklistItems(), 'evidence');
@@ -3371,7 +3375,8 @@ function buildMarkdown() {
   var impact   = document.getElementById('impact').value   || '_Not yet provided._';
   var actType  = document.getElementById('act_type').value;
   var analysis = document.getElementById('analysis').value || '_Pending._';
-  var verdict  = (caseState.triage && caseState.triage.verdict) || document.querySelector('input[name="verdict"]:checked').value;
+  var verdictEl = document.querySelector('input[name="verdict"]:checked');
+  var verdict  = (verdictEl && verdictEl.value) || (caseState.triage && caseState.triage.verdict) || 'Pending';
   var summary  = document.getElementById('summary').value  || '_Not yet provided._';
   var selStepMd = document.querySelector('input[name="next-step"]:checked');
   var stepValMd = selStepMd ? selStepMd.value : '';
@@ -3454,6 +3459,7 @@ function buildMarkdown() {
     md.push('', '### 🔗 External Links');
     externalLinks.forEach(function(l){ md.push('- ['+truncReport(l.title, 60)+']('+l.url+')'); });
   }
+  md.push.apply(md, buildMarkdownTriageSections());
   md.push('', '### 🏁 Conclusion');
   md.push('**Verdict:** '+verdict);
   md.push('**Confidence:** ' + ((caseState.triage && caseState.triage.confidence) || 'Pending'));
@@ -3473,7 +3479,8 @@ function buildJira() {
   var impact   = document.getElementById('impact').value   || '_Not yet provided._';
   var actType  = document.getElementById('act_type').value;
   var analysis = document.getElementById('analysis').value || '_Pending._';
-  var verdict  = (caseState.triage && caseState.triage.verdict) || document.querySelector('input[name="verdict"]:checked').value;
+  var verdictEl = document.querySelector('input[name="verdict"]:checked');
+  var verdict  = (verdictEl && verdictEl.value) || (caseState.triage && caseState.triage.verdict) || 'Pending';
   var summary  = document.getElementById('summary').value  || '_Not yet provided._';
   var selStepJ = document.querySelector('input[name="next-step"]:checked');
   var stepValJ = selStepJ ? selStepJ.value : '';
@@ -3578,6 +3585,7 @@ function buildJira() {
     j.push('h3. 🔗 External Links');
     externalLinks.forEach(function(l){ j.push('* ['+truncReport(l.title, 60)+'|'+l.url+']'); });
   }
+  j.push.apply(j, buildJiraTriageSections());
   j.push('');
   j.push('h3. 🏁 Conclusion');
   j.push('*Verdict:* '+vcIcon+' '+verdict);
@@ -4281,6 +4289,8 @@ function runTriageSupportSmokeTests() {
     document.getElementById('raw_input').value = '';
     ensureTriageState();
     assert('default triage verdict pending', caseState.triage.verdict === 'Pending');
+    assert('triage assessment support has no verdict dropdown', !document.getElementById('triage_verdict'));
+    assert('summary and conclusion verdict controls remain visible', document.querySelectorAll('input[name="verdict"]').length > 0);
 
     caseState.events = [
       normalizeJsonEvent({ fields: { '@timestamp':['2026-05-30T09:59:00Z'], 'event.category':['authentication'], 'event.action':['logon-success'], 'event.outcome':['success'], 'user.name':['mitchellt110'], 'source.ip':['25.235.94.26'], 'host.name':['RUDBU620055'] } }),
@@ -4350,6 +4360,16 @@ function runTriageSupportSmokeTests() {
     assert('pivot generation includes vault operation pivot', hasVaultOperationPivot);
 
     caseState.triage.includeAnalystAidSections = false;
+    caseState.triage.recommendedAction = 'Pending';
+    caseState.triage.confidence = 'Pending';
+    var vtp = document.getElementById('v-tp');
+    if (vtp) vtp.checked = true;
+    onVerdictChange();
+    var warningBox = document.getElementById('triage-decision-warnings');
+    var warningText = (warningBox && warningBox.textContent) ? warningBox.textContent : '';
+    assert('warnings use summary verdict when recommended action pending', warningText.indexOf('Recommended action is still Pending while a final verdict has been selected.') !== -1);
+    assert('warnings use summary verdict when confidence pending', warningText.indexOf('Confidence is still Pending while a final verdict has been selected.') !== -1);
+
     var mdDefault = buildMarkdown();
     var jiraDefault = buildJira();
     assert('default markdown excludes evidence section', mdDefault.indexOf('### ✅ Evidence Reviewed') === -1);
@@ -4369,6 +4389,7 @@ function runTriageSupportSmokeTests() {
 
     var mdConBody = mdConStart !== -1 ? mdDefault.slice(mdConStart) : '';
     assert('markdown conclusion includes decision fields', mdConBody.indexOf('**Verdict:**') !== -1 && mdConBody.indexOf('**Confidence:**') !== -1 && mdConBody.indexOf('**Recommended Action:**') !== -1 && mdConBody.indexOf('**Escalation Required:**') !== -1 && mdConBody.indexOf('**Business Impact:**') !== -1);
+    assert('markdown conclusion verdict follows summary selection', mdConBody.indexOf('**Verdict:** True Positive') !== -1);
 
     var jTriStart = jiraDefault.indexOf('h3. 🔍 Triage & Analysis');
     var jConStart = jiraDefault.indexOf('h3. 🏁 Conclusion');
@@ -4377,6 +4398,7 @@ function runTriageSupportSmokeTests() {
 
     var jConBody = jConStart !== -1 ? jiraDefault.slice(jConStart) : '';
     assert('jira conclusion includes decision fields', jConBody.indexOf('*Verdict:*') !== -1 && jConBody.indexOf('*Confidence:*') !== -1 && jConBody.indexOf('*Recommended Action:*') !== -1 && jConBody.indexOf('*Escalation Required:*') !== -1 && jConBody.indexOf('*Business Impact:*') !== -1);
+    assert('jira conclusion verdict follows summary selection', jConBody.indexOf('*Verdict:*') !== -1 && jConBody.indexOf('True Positive') !== -1);
 
     caseState.triage.includeAnalystAidSections = true;
     var mdWithAid = buildMarkdown();
