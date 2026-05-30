@@ -3312,13 +3312,6 @@ function buildMarkdownTriageSections() {
   var pivots = includeAid ? getReportPivots() : [];
   var rc = caseState.ruleContext || {};
 
-  md.push('', '### 🧭 Triage Assessment');
-  md.push('- **Confidence:** ' + (caseState.triage.confidence || 'Pending'));
-  md.push('- **Recommended Action:** ' + (caseState.triage.recommendedAction || 'Pending'));
-  md.push('- **Escalation Required:** ' + (caseState.triage.escalationRequired || 'Pending'));
-  md.push('- **Business Impact:** ' + (caseState.triage.businessImpact || 'Unknown'));
-  if (caseState.triage.analystRationale && caseState.triage.analystRationale.trim()) md.push('- **Analyst Rationale:** ' + caseState.triage.analystRationale.trim());
-
   if (includeAid) {
     md.push('', '### ✅ Evidence Reviewed');
     if (checkedEvidence.length) checkedEvidence.forEach(function(i){ md.push('- ' + i); });
@@ -3347,14 +3340,6 @@ function buildJiraTriageSections() {
   var checkedKnownGood = includeAid ? getCheckedTriageItems('known') : [];
   var pivots = includeAid ? getReportPivots() : [];
   var rc = caseState.ruleContext || {};
-
-  j.push('');
-  j.push('h3. 🧭 Triage Assessment');
-  j.push('*Confidence:* ' + (caseState.triage.confidence || 'Pending'));
-  j.push('*Recommended Action:* ' + (caseState.triage.recommendedAction || 'Pending'));
-  j.push('*Escalation Required:* ' + (caseState.triage.escalationRequired || 'Pending'));
-  j.push('*Business Impact:* ' + (caseState.triage.businessImpact || 'Unknown'));
-  if (caseState.triage.analystRationale && caseState.triage.analystRationale.trim()) j.push('*Analyst Rationale:* ' + caseState.triage.analystRationale.trim());
 
   if (includeAid) {
     j.push('');
@@ -3457,7 +3442,6 @@ function buildMarkdown() {
     }
   }
 
-  md.push.apply(md, buildMarkdownTriageSections());
   md.push.apply(md, buildMarkdownCaseEntitiesSection());
 
   var timelineRowsMd = buildTimelineRowsForReport();
@@ -3472,6 +3456,10 @@ function buildMarkdown() {
   }
   md.push('', '### 🏁 Conclusion');
   md.push('**Verdict:** '+verdict);
+  md.push('**Confidence:** ' + ((caseState.triage && caseState.triage.confidence) || 'Pending'));
+  md.push('**Recommended Action:** ' + ((caseState.triage && caseState.triage.recommendedAction) || 'Pending'));
+  md.push('**Escalation Required:** ' + ((caseState.triage && caseState.triage.escalationRequired) || 'Pending'));
+  md.push('**Business Impact:** ' + ((caseState.triage && caseState.triage.businessImpact) || 'Unknown'));
   if (verdict === 'True Positive') md.push('**Activity Type:** '+actType);
   if (verdict === 'True Positive') md.push('**Potential Impact:** '+impact);
   md.push('', '**Summary:** '+summary);
@@ -3570,7 +3558,6 @@ function buildJira() {
     }
   }
 
-  j.push.apply(j, buildJiraTriageSections());
   j.push.apply(j, buildJiraCaseEntitiesSection());
 
   j.push('');
@@ -3594,6 +3581,10 @@ function buildJira() {
   j.push('');
   j.push('h3. 🏁 Conclusion');
   j.push('*Verdict:* '+vcIcon+' '+verdict);
+  j.push('*Confidence:* ' + ((caseState.triage && caseState.triage.confidence) || 'Pending'));
+  j.push('*Recommended Action:* ' + ((caseState.triage && caseState.triage.recommendedAction) || 'Pending'));
+  j.push('*Escalation Required:* ' + ((caseState.triage && caseState.triage.escalationRequired) || 'Pending'));
+  j.push('*Business Impact:* ' + ((caseState.triage && caseState.triage.businessImpact) || 'Unknown'));
   if (verdict === 'True Positive') j.push('*Activity Type:* '+actType);
   if (verdict === 'True Positive') j.push('*Potential Impact:* '+impact);
   j.push('');
@@ -4367,10 +4358,25 @@ function runTriageSupportSmokeTests() {
     assert('default markdown uses grouped case context section', mdDefault.indexOf('#### Case Context') !== -1);
     assert('default markdown uses grouped web activity section', mdDefault.indexOf('#### Web / HTTP Activity') !== -1);
     assert('default markdown no longer uses flat entities table', mdDefault.indexOf('| Type | Value | Source | Notes |') === -1);
-    assert('markdown triage section renamed to assessment', mdDefault.indexOf('### 🧭 Triage Assessment') !== -1 && mdDefault.indexOf('### 🧭 Triage Decision') === -1);
-    assert('markdown verdict appears only in conclusion', (mdDefault.match(/\*\*Verdict:\*\*/g) || []).length === 1);
-    assert('jira triage section renamed to assessment', jiraDefault.indexOf('h3. 🧭 Triage Assessment') !== -1 && jiraDefault.indexOf('h3. 🧭 Triage Decision') === -1);
-    assert('jira verdict appears only in conclusion', (jiraDefault.match(/\*Verdict:\*/g) || []).length === 1);
+    assert('markdown does not include triage assessment section', mdDefault.indexOf('### 🧭 Triage Assessment') === -1 && mdDefault.indexOf('### 🧭 Triage Decision') === -1);
+    assert('jira does not include triage assessment section', jiraDefault.indexOf('h3. 🧭 Triage Assessment') === -1 && jiraDefault.indexOf('h3. 🧭 Triage Decision') === -1);
+    assert('markdown includes triage and analysis section', mdDefault.indexOf('### 🔍 Triage & Analysis') !== -1);
+
+    var mdTriStart = mdDefault.indexOf('### 🔍 Triage & Analysis');
+    var mdConStart = mdDefault.indexOf('### 🏁 Conclusion');
+    var mdTriBody = (mdTriStart !== -1 && mdConStart !== -1 && mdConStart > mdTriStart) ? mdDefault.slice(mdTriStart, mdConStart) : '';
+    assert('markdown triage and analysis excludes decision fields', mdTriBody.indexOf('**Confidence:**') === -1 && mdTriBody.indexOf('**Recommended Action:**') === -1 && mdTriBody.indexOf('**Escalation Required:**') === -1 && mdTriBody.indexOf('**Business Impact:**') === -1 && mdTriBody.indexOf('**Verdict:**') === -1);
+
+    var mdConBody = mdConStart !== -1 ? mdDefault.slice(mdConStart) : '';
+    assert('markdown conclusion includes decision fields', mdConBody.indexOf('**Verdict:**') !== -1 && mdConBody.indexOf('**Confidence:**') !== -1 && mdConBody.indexOf('**Recommended Action:**') !== -1 && mdConBody.indexOf('**Escalation Required:**') !== -1 && mdConBody.indexOf('**Business Impact:**') !== -1);
+
+    var jTriStart = jiraDefault.indexOf('h3. 🔍 Triage & Analysis');
+    var jConStart = jiraDefault.indexOf('h3. 🏁 Conclusion');
+    var jTriBody = (jTriStart !== -1 && jConStart !== -1 && jConStart > jTriStart) ? jiraDefault.slice(jTriStart, jConStart) : '';
+    assert('jira triage and analysis excludes decision fields', jTriBody.indexOf('*Confidence:*') === -1 && jTriBody.indexOf('*Recommended Action:*') === -1 && jTriBody.indexOf('*Escalation Required:*') === -1 && jTriBody.indexOf('*Business Impact:*') === -1 && jTriBody.indexOf('*Verdict:*') === -1);
+
+    var jConBody = jConStart !== -1 ? jiraDefault.slice(jConStart) : '';
+    assert('jira conclusion includes decision fields', jConBody.indexOf('*Verdict:*') !== -1 && jConBody.indexOf('*Confidence:*') !== -1 && jConBody.indexOf('*Recommended Action:*') !== -1 && jConBody.indexOf('*Escalation Required:*') !== -1 && jConBody.indexOf('*Business Impact:*') !== -1);
 
     caseState.triage.includeAnalystAidSections = true;
     var mdWithAid = buildMarkdown();
