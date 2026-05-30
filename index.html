@@ -969,10 +969,8 @@ No prior alerts on this host in the last 30 days. The destination port 4444 is c
               <label class="field-label" style="margin-top:0;">Initial Assessment</label>
               <select id="triage_initialAssessment" onchange="onTriageAnalysisFieldChange('initialAssessment', this.value)"></select>
             </div>
-            <div style="grid-column: span 2;display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;">
-              <button class="btn" type="button" onclick="generateDraftTriageNotes('safe')">Generate Draft Triage Notes</button>
-              <button class="btn" type="button" onclick="generateDraftTriageNotes('fill')">Fill Empty Fields Only</button>
-              <button class="btn" type="button" onclick="generateDraftTriageNotes('overwrite')">Overwrite Draft Fields</button>
+            <div style="grid-column: span 2;display:flex;align-items:flex-end;">
+              <div class="triage-note" style="margin-bottom:2px;">Structured analyst notes are manual. Guidance below is prompt-only and does not auto-fill narrative fields.</div>
             </div>
           </div>
           <label class="field-label">What Happened</label>
@@ -2495,61 +2493,6 @@ function detectTriageScenario() {
   return 'generic';
 }
 
-function buildWhatHappenedDraft(ctx, scenario) {
-  if (scenario === 'web') {
-    var primaryUrl = ctx.urlDefanged !== 'unknown URL' ? ctx.urlDefanged : ctx.domainDefanged;
-    var domains = ctx.observables.filter(function(o){ return o.type === 'Domain'; }).map(function(o){ return o.value; });
-    var files = ctx.observables.filter(function(o){ return o.type === 'File Name / Path'; }).map(function(o){ return o.value; });
-    var related = '';
-    if (domains.length > 1 || files.length > 1) {
-      var d = uniqValues(domains).slice(0, 3).join(', ');
-      var f = uniqValues(files).slice(0, 3).join(', ');
-      related = ' Supporting events also show related web activity involving ' + (d || 'related domains') + (f ? ', including ' + f : '') + '.';
-    }
-    return 'The alert relates to a Large File Download involving user ' + ctx.user + ' on ' + ctx.host + '. The primary URL was ' + primaryUrl + ', with ' + ctx.destinationBytes + ' bytes transferred.' + related;
-  }
-  if (scenario === 'vault') {
-    var pathText = ctx.vaultMount !== 'mount not available' && ctx.vaultRequestUri !== 'request URI not available'
-      ? (ctx.vaultMount + ' / ' + ctx.vaultRequestUri)
-      : (ctx.vaultRequestUri !== 'request URI not available' ? ctx.vaultRequestUri : ctx.vaultMount);
-    return 'The alert relates to Hashicorp Vault access involving operation ' + ctx.vaultOperation + ' from remote IP ' + ctx.vaultRemoteIpDefanged + ' against mount/request path ' + pathText + '.';
-  }
-  if (scenario === 'process') {
-    return 'The alert relates to process execution on ' + ctx.host + ' by ' + ctx.user + '. ' + ctx.process + ' was executed with command line ' + ctx.commandLine + ' and related network activity was observed to ' + (ctx.urlDefanged !== 'unknown URL' ? ctx.urlDefanged : ctx.destinationIpDefanged) + '.';
-  }
-  return 'The alert was reviewed and triage activity has started. Timeline events and primary entities/observables were extracted for analyst validation.';
-}
-
-function buildEvidenceReviewedDraft(ctx, scenario) {
-  if (scenario === 'web') return 'Supporting timeline events show authentication/user context, web activity before and after the alert, source/destination IPs, domain/URL, file name/path, and transfer size.';
-  if (scenario === 'vault') return 'Timeline events show Vault request activity, token/service account context, related host, and outcome. Observed remote IP: ' + ctx.vaultRemoteIpDefanged + '.';
-  if (scenario === 'process') return 'Timeline events include authentication context, process execution, network activity, and endpoint detection.';
-  return 'Timeline and key alert fields were reviewed, and entities/observables were extracted to support additional validation steps.';
-}
-
-function buildAssessmentRationaleDraft(ctx, scenario) {
-  if (scenario === 'web') return 'The activity is a true positive against the detection logic because the configured large-download threshold was met. Further validation is required to determine whether the download was expected business activity or suspicious data transfer.';
-  if (scenario === 'vault') return 'The activity requires validation because Vault access was observed under a credential-access detection rule. The key triage question is whether the service account/token, source IP, mount point, and access time are expected.';
-  if (scenario === 'process') return 'Encoded or suspicious script execution followed by outbound network activity is suspicious and may indicate payload retrieval or post-compromise activity.';
-  return 'Current evidence indicates the alert should remain under active triage until expected behaviour and related activity are validated.';
-}
-
-function buildKnownGoodContextDraft(scenario) {
-  var known = getCheckedTriageItems('known');
-  if (known.length) return 'Known-good checks marked complete include: ' + known.join('; ') + '.';
-  if (scenario === 'web') return 'No confirmed business justification or known-good explanation has been recorded yet.';
-  if (scenario === 'vault') return 'No confirmed automation/change context has been recorded yet.';
-  if (scenario === 'process') return 'No approved admin/script or software deployment context has been recorded yet.';
-  return 'No confirmed known-good explanation has been recorded yet.';
-}
-
-function buildRemainingGapsDraft(scenario) {
-  if (scenario === 'web') return 'Confirm whether the domain and downloaded file are expected for the user/unit, whether the UAD is expected for this user, and whether there is a valid business requirement or ticket for the download.';
-  if (scenario === 'vault') return 'Confirm source IP ownership, service account owner, approved automation/change record, and whether the mount/request URI is expected.';
-  if (scenario === 'process') return 'Decode/validate command content, confirm parent process, check EDR process tree, and validate destination reputation.';
-  return 'Validate expected behaviour for the user/host, review related alerts, and collect additional corroborating evidence before final judgement.';
-}
-
 function buildSuggestedQuestions(scenario) {
   if (scenario === 'web') return [
     'Is the domain expected for the user/unit?',
@@ -2590,41 +2533,13 @@ function buildSuggestedRecommendedActionHint(scenario) {
   return 'Suggested action: Request More Evidence before final categorisation';
 }
 
-function buildTriageDraftFromCase() {
-  ensureTriageAnalysisState();
+function buildTriageGuidanceFromCase() {
   var scenario = detectTriageScenario();
-  var ctx = getTriageDraftContext();
   return {
     scenario: scenario,
-    initialAssessment: scenario === 'web' ? 'Requires Validation' : (scenario === 'vault' ? 'Requires Validation' : (scenario === 'process' ? 'Suspicious' : 'Pending')),
-    whatHappened: buildWhatHappenedDraft(ctx, scenario),
-    evidenceReviewed: buildEvidenceReviewedDraft(ctx, scenario),
-    assessmentRationale: buildAssessmentRationaleDraft(ctx, scenario),
-    knownGoodContext: buildKnownGoodContextDraft(scenario),
-    remainingGaps: buildRemainingGapsDraft(scenario),
     questions: buildSuggestedQuestions(scenario),
     suggestedActionHint: buildSuggestedRecommendedActionHint(scenario)
   };
-}
-
-function applyTriageDraft(draft, mode) {
-  ensureTriageAnalysisState();
-  var t = caseState.triageAnalysis;
-  var textFields = ['whatHappened', 'evidenceReviewed', 'assessmentRationale', 'knownGoodContext', 'remainingGaps'];
-  var hasExistingText = textFields.some(function(k){ return String(t[k] || '').trim(); });
-  var nextMode = mode;
-  if (mode === 'safe' && hasExistingText) {
-    nextMode = confirm('Structured triage notes already contain content. Click OK to overwrite draft fields, or Cancel to fill empty fields only.') ? 'overwrite' : 'fill';
-  }
-  if (nextMode === 'overwrite') {
-    t.initialAssessment = draft.initialAssessment;
-    textFields.forEach(function(k){ t[k] = draft[k] || ''; });
-  } else {
-    if (!String(t.initialAssessment || '').trim() || t.initialAssessment === 'Pending') t.initialAssessment = draft.initialAssessment;
-    textFields.forEach(function(k){ if (!String(t[k] || '').trim()) t[k] = draft[k] || ''; });
-  }
-  t.generatedAt = new Date().toISOString();
-  t.lastGeneratedDraft = draft.scenario;
 }
 
 function buildMissingTriagePoints() {
@@ -2661,10 +2576,10 @@ function renderTriageAutomationPanels() {
     if (el && el.value !== (t[map[1]] || '')) el.value = t[map[1]] || '';
   });
 
-  var draft = buildTriageDraftFromCase();
+  var guidance = buildTriageGuidanceFromCase();
   var qEl = document.getElementById('triage-suggested-questions');
   if (qEl) {
-    qEl.innerHTML = (draft.questions || []).map(function(q){
+    qEl.innerHTML = (guidance.questions || []).map(function(q){
       return '<div class="triage-note" style="margin-bottom:6px;">• ' + escHtml(q) + '</div>';
     }).join('') || '<div class="triage-note">No suggested questions available yet.</div>';
   }
@@ -2678,16 +2593,7 @@ function renderTriageAutomationPanels() {
   }
 
   var hintEl = document.getElementById('triage_suggested_action_hint');
-  if (hintEl) hintEl.textContent = draft.suggestedActionHint + ' (hint only; no automatic selection applied).';
-}
-
-function generateDraftTriageNotes(mode) {
-  ensureTriageAnalysisState();
-  migrateLegacyAnalysisText();
-  var draft = buildTriageDraftFromCase();
-  applyTriageDraft(draft, mode || 'safe');
-  renderTriageAutomationPanels();
-  updatePreview();
+  if (hintEl) hintEl.textContent = guidance.suggestedActionHint + ' (hint only; no automatic selection applied).';
 }
 
 function normalizeJsonEvent(rawEvent) {
@@ -4946,27 +4852,25 @@ function runTriageSupportSmokeTests() {
       'destination.bytes': [14154825]
     }});
     onRawChange();
-    generateDraftTriageNotes('overwrite');
+    renderTriageAutomationPanels();
+    assert('structured triage fields are present in ui', !!document.getElementById('triage_initialAssessment') && !!document.getElementById('triage_whatHappened') && !!document.getElementById('triage_evidenceReviewed') && !!document.getElementById('triage_assessmentRationale') && !!document.getElementById('triage_knownGoodContext') && !!document.getElementById('triage_remainingGaps'));
+    assert('triage auto-fill buttons are not visible', !Array.prototype.some.call(document.querySelectorAll('#triage-analysis-v2-panel button'), function(btn){
+      var txt = String(btn.textContent || '').trim();
+      return txt === 'Generate Draft Triage Notes' || txt === 'Fill Empty Fields Only' || txt === 'Overwrite Draft Fields';
+    }));
+    caseState.triageAnalysis.initialAssessment = 'Pending';
+    caseState.triageAnalysis.whatHappened = '';
+    caseState.triageAnalysis.evidenceReviewed = '';
+    caseState.triageAnalysis.assessmentRationale = '';
+    caseState.triageAnalysis.knownGoodContext = '';
+    caseState.triageAnalysis.remainingGaps = '';
+    renderTriageAutomationPanels();
     assert('web large-download scenario detection returns web', detectTriageScenario() === 'web');
-    assert('web scenario draft generation includes large download context', /Large File Download/i.test(caseState.triageAnalysis.whatHappened || ''));
-    assert('web what happened includes user host url and bytes', /mitchellt110/i.test(caseState.triageAnalysis.whatHappened || '') && /RUDBU620055/i.test(caseState.triageAnalysis.whatHappened || '') && /(aidu\.mod\.uk|aidu\[\.\]mod\[\.\]uk)/i.test(caseState.triageAnalysis.whatHappened || '') && /14154825 bytes transferred/i.test(caseState.triageAnalysis.whatHappened || ''));
-    assert('web what happened prefers large file as primary url', /The primary URL was .*My-Products-Large/i.test(caseState.triageAnalysis.whatHappened || ''));
-    assert('web what happened includes defanged url/domain', /hxxps:\/\//i.test(caseState.triageAnalysis.whatHappened || '') || /\[\.\]/.test(caseState.triageAnalysis.whatHappened || ''));
-    assert('web what happened excludes process wording', !/process execution|unknown process|encoded or suspicious script|decode\/validate command/i.test(caseState.triageAnalysis.whatHappened || ''));
-    assert('web initial assessment defaults to requires validation', (caseState.triageAnalysis.initialAssessment || '') === 'Requires Validation');
+    assert('triage narrative fields remain manual and are not auto-filled', !String(caseState.triageAnalysis.whatHappened || '').trim() && !String(caseState.triageAnalysis.evidenceReviewed || '').trim() && !String(caseState.triageAnalysis.assessmentRationale || '').trim() && !String(caseState.triageAnalysis.knownGoodContext || '').trim() && !String(caseState.triageAnalysis.remainingGaps || '').trim());
     var webQuestions = document.getElementById('triage-suggested-questions').textContent || '';
     assert('suggested questions generated for web scenario', /domain expected for the user\/unit/i.test(webQuestions));
     var webHint = document.getElementById('triage_suggested_action_hint').textContent || '';
     assert('web suggested action hint remains request more evidence', /Suggested action: Request More Evidence \/ Confirm Business Use/i.test(webHint));
-
-    caseState.triageAnalysis.whatHappened = 'Analyst-written narrative';
-    caseState.triageAnalysis.evidenceReviewed = '';
-    generateDraftTriageNotes('fill');
-    assert('fill-empty mode does not overwrite existing analyst text', caseState.triageAnalysis.whatHappened === 'Analyst-written narrative');
-    assert('fill-empty mode populates blank fields', String(caseState.triageAnalysis.evidenceReviewed || '').trim().length > 0);
-
-    generateDraftTriageNotes('overwrite');
-    assert('overwrite mode replaces generated fields', caseState.triageAnalysis.whatHappened !== 'Analyst-written narrative');
 
     caseState.events = [
       normalizeJsonEvent({ fields: {
@@ -4989,10 +4893,7 @@ function runTriageSupportSmokeTests() {
       'kibana.alert.rule.threat.technique.id': ['T1555']
     }});
     onRawChange();
-    generateDraftTriageNotes('overwrite');
-    assert('vault scenario draft generation includes Vault context', /Hashicorp Vault access/i.test(caseState.triageAnalysis.whatHappened || ''));
-    assert('vault draft does not use unknown placeholders when values exist', !/unknown operation|mount not available/i.test(caseState.triageAnalysis.whatHappened || ''));
-    assert('vault draft includes operation and mount/request values', /operation read/i.test(caseState.triageAnalysis.whatHappened || '') && /secret\/data\/prod/i.test(caseState.triageAnalysis.whatHappened || '') && /\/v1\/secret\/data\/prod\/db/i.test(caseState.triageAnalysis.whatHappened || ''));
+    renderTriageAutomationPanels();
     var vaultQuestions = document.getElementById('triage-suggested-questions').textContent || '';
     assert('suggested questions generated for vault scenario', /service account expected/i.test(vaultQuestions));
 
@@ -5021,10 +4922,8 @@ function runTriageSupportSmokeTests() {
       'kibana.alert.rule.threat.technique.id': ['T1059']
     }});
     onRawChange();
-    generateDraftTriageNotes('overwrite');
+    renderTriageAutomationPanels();
     assert('powershell scenario detection returns process', detectTriageScenario() === 'process');
-    assert('powershell scenario draft generation includes process context', /process execution/i.test(caseState.triageAnalysis.whatHappened || ''));
-    assert('powershell draft includes meaningful command line', /EncodedCommand/i.test(caseState.triageAnalysis.whatHappened || ''));
     var processQuestions = document.getElementById('triage-suggested-questions').textContent || '';
     assert('suggested questions generated for process scenario', /encoded or obfuscated/i.test(processQuestions));
 
@@ -5067,6 +4966,14 @@ function runTriageSupportSmokeTests() {
     assert('warnings use summary verdict when recommended action pending', warningText.indexOf('Recommended action is still Pending while a final verdict has been selected.') !== -1);
     assert('warnings use summary verdict when confidence pending', warningText.indexOf('Confidence is still Pending while a final verdict has been selected.') !== -1);
 
+    caseState.triageAnalysis.initialAssessment = 'Requires Validation';
+    caseState.triageAnalysis.whatHappened = 'Manual analyst narrative for what happened.';
+    caseState.triageAnalysis.evidenceReviewed = 'Manual evidence summary.';
+    caseState.triageAnalysis.assessmentRationale = 'Manual rationale.';
+    caseState.triageAnalysis.knownGoodContext = 'Manual known-good context.';
+    caseState.triageAnalysis.remainingGaps = 'Manual remaining gaps.';
+    renderTriageAutomationPanels();
+
     var mdDefault = buildMarkdown();
     var jiraDefault = buildJira();
     assert('default markdown excludes evidence section', mdDefault.indexOf('### ✅ Evidence Reviewed') === -1);
@@ -5088,6 +4995,7 @@ function runTriageSupportSmokeTests() {
     var mdConBody = mdConStart !== -1 ? mdDefault.slice(mdConStart) : '';
     assert('markdown conclusion includes decision fields', mdConBody.indexOf('**Verdict:**') !== -1 && mdConBody.indexOf('**Confidence:**') !== -1 && mdConBody.indexOf('**Recommended Action:**') !== -1 && mdConBody.indexOf('**Escalation Required:**') !== -1 && mdConBody.indexOf('**Business Impact:**') !== -1);
     assert('markdown conclusion verdict follows summary selection', mdConBody.indexOf('**Verdict:** True Positive') !== -1);
+    assert('markdown triage analysis includes manual structured notes only', mdTriBody.indexOf('Manual analyst narrative for what happened.') !== -1 && mdTriBody.indexOf('Manual evidence summary.') !== -1 && mdTriBody.indexOf('Manual rationale.') !== -1 && mdTriBody.indexOf('Manual known-good context.') !== -1 && mdTriBody.indexOf('Manual remaining gaps.') !== -1);
     assert('markdown grouped process activity includes command-line detail', /\*\*Command Line:\*\* .*EncodedCommand/i.test(mdDefault));
     assert('markdown grouped web activity primary url prefers large transfer file', /My-Products-Large\[\.\]mp4/i.test(mdDefault));
 
@@ -5100,6 +5008,16 @@ function runTriageSupportSmokeTests() {
     var jConBody = jConStart !== -1 ? jiraDefault.slice(jConStart) : '';
     assert('jira conclusion includes decision fields', jConBody.indexOf('*Verdict:*') !== -1 && jConBody.indexOf('*Confidence:*') !== -1 && jConBody.indexOf('*Recommended Action:*') !== -1 && jConBody.indexOf('*Escalation Required:*') !== -1 && jConBody.indexOf('*Business Impact:*') !== -1);
     assert('jira conclusion verdict follows summary selection', jConBody.indexOf('*Verdict:*') !== -1 && jConBody.indexOf('True Positive') !== -1);
+    assert('jira triage analysis includes manual structured notes only', jTriBody.indexOf('Manual analyst narrative for what happened.') !== -1 && jTriBody.indexOf('Manual evidence summary.') !== -1 && jTriBody.indexOf('Manual rationale.') !== -1 && jTriBody.indexOf('Manual known-good context.') !== -1 && jTriBody.indexOf('Manual remaining gaps.') !== -1);
+
+    caseState.triageAnalysis.initialAssessment = 'Pending';
+    caseState.triageAnalysis.whatHappened = '';
+    caseState.triageAnalysis.evidenceReviewed = '';
+    caseState.triageAnalysis.assessmentRationale = '';
+    caseState.triageAnalysis.knownGoodContext = '';
+    caseState.triageAnalysis.remainingGaps = '';
+    assert('markdown triage analysis pending fallback when fields are empty', buildMarkdownTriageAnalysisBody() === '_Pending. Not yet provided._');
+    assert('jira triage analysis pending fallback when fields are empty', buildJiraTriageAnalysisBody() === '_Pending. Not yet provided._');
 
     caseState.triage.includeAnalystAidSections = true;
     var mdWithAid = buildMarkdown();
